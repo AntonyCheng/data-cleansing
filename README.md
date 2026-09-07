@@ -67,7 +67,12 @@ npm run dev             # 同时起 bff(:8787) 和 web(:5173)
   - 数仓回传：`POST /api/export/warehouse` → `exports/*.jsonl`（占位真实数仓）
   - 埋点：`web/src/telemetry.ts` 批量攒事件 → `POST /api/telemetry` → `telemetry/*.jsonl`（task_start/success/fail、export、field_edit、frame_interval_change…）
   - a11y：菜单方向键切换、aria 标签
-- [ ] 真正剩下的：视频 WebSocket 二进制流式 ASR（逐字回显，非逐句）；数仓真实对接；图片 grounding 换 `doubao-seed-1-6-vision` 内置工具提精度
+### 图片字段框选定位 — 已尝试，暂缓
+`doubao-seed-2-1-turbo/pro` 的 bbox 输出不自洽（自报坐标系尺寸与实际坐标不一致），画不准框。
+可靠 grounding 需 `doubao-seed-1-6-vision`（内置 grounding/crop 工具），但该模型在本账号方舟未上架。
+已回退：图片仍用 `turbo`，prompt 不再要 bbox，保留字段就地编辑。待模型可用再做。
+
+- [ ] 真正剩下的：视频 WebSocket 二进制流式 ASR（逐字回显，非逐句）；数仓真实对接
 
 ### 已知事项
 - 火山方舟 `doubao-seed-2-1-pro` 带思考约 60s，故图片/帧/摘要用 `turbo` + `thinking.disabled`（图片~14s；视频每帧 3-5s）。

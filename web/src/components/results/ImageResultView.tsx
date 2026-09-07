@@ -1,45 +1,8 @@
-import { useRef, useState } from "react";
 import type { ImageField, ImageResult, TaskEnvelope } from "../../types";
 import { track } from "../../telemetry";
 import { copyJson, downloadJson } from "../export";
 
 type Phase = "idle" | "uploading" | "cleaning" | "done" | "error";
-
-interface DrawBox {
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-}
-
-/** 把原图像素 bbox 换算成叠加层坐标（考虑 object-fit: contain 的留白） */
-function projectBox(img: HTMLImageElement, bbox: [number, number, number, number]): DrawBox | null {
-  const { naturalWidth: nw, naturalHeight: nh } = img;
-  if (!nw || !nh) return null;
-  const bw = img.clientWidth;
-  const bh = img.clientHeight;
-  const natRatio = nw / nh;
-  const boxRatio = bw / bh;
-  let drawW: number;
-  let drawH: number;
-  if (natRatio > boxRatio) {
-    drawW = bw;
-    drawH = bw / natRatio;
-  } else {
-    drawH = bh;
-    drawW = bh * natRatio;
-  }
-  const offX = (bw - drawW) / 2;
-  const offY = (bh - drawH) / 2;
-  const scale = drawW / nw;
-  const [x1, y1, x2, y2] = bbox;
-  return {
-    left: offX + x1 * scale,
-    top: offY + y1 * scale,
-    width: Math.max(2, (x2 - x1) * scale),
-    height: Math.max(2, (y2 - y1) * scale),
-  };
-}
 
 export function ImageResultView({
   env,
@@ -54,10 +17,6 @@ export function ImageResultView({
   onEditFields: (fields: ImageField[]) => void;
   onWarehouse: () => void;
 }) {
-  const imgRef = useRef<HTMLImageElement>(null);
-  const [activeField, setActiveField] = useState<number | null>(null);
-  const [, forceRender] = useState(0);
-
   if (phase === "uploading" || phase === "cleaning") {
     return (
       <div>
@@ -75,33 +34,13 @@ export function ImageResultView({
   }
 
   const r = env.result;
-
   const setValue = (i: number, value: string) => {
     onEditFields(r.fields.map((f, idx) => (idx === i ? { ...f, value } : f)));
   };
 
-  const activeBbox = activeField != null ? r.fields[activeField]?.bbox : undefined;
-  const drawBox =
-    activeBbox && imgRef.current ? projectBox(imgRef.current, activeBbox) : null;
-
   return (
     <div>
-      {previewUrl && (
-        <div className="preview preview-locatable">
-          <img
-            ref={imgRef}
-            src={previewUrl}
-            alt="原始图片"
-            onLoad={() => forceRender((n) => n + 1)}
-          />
-          {drawBox && (
-            <div
-              className="locate-box"
-              style={{ left: drawBox.left, top: drawBox.top, width: drawBox.width, height: drawBox.height }}
-            />
-          )}
-        </div>
-      )}
+      {previewUrl && <div className="preview"><img src={previewUrl} alt="原始图片" /></div>}
 
       <div className="subhead">
         版式 · {r.layout}
@@ -110,15 +49,10 @@ export function ImageResultView({
       <p style={{ margin: "0 0 8px" }}>{r.summary}</p>
       <div className="tags">{r.tags.map((t) => <span key={t} className="tag">{t}</span>)}</div>
 
-      <div className="subhead">结构化字段（点值编辑 · 悬停定位原图）</div>
+      <div className="subhead">结构化字段（点值可编辑）</div>
       <div className="fields">
         {r.fields.map((f, i) => (
-          <div
-            key={f.key}
-            className={`field-row${f.confidence < 0.8 ? " low" : ""}${f.bbox ? " has-box" : ""}`}
-            onMouseEnter={() => f.bbox && setActiveField(i)}
-            onMouseLeave={() => setActiveField((cur) => (cur === i ? null : cur))}
-          >
+          <div key={f.key} className={`field-row${f.confidence < 0.8 ? " low" : ""}`}>
             <span className="k">{f.label}</span>
             <span className="v">
               <input
@@ -127,7 +61,7 @@ export function ImageResultView({
                 aria-label={f.label}
                 onChange={(e) => setValue(i, e.target.value)}
               />
-              <span className="cf"> · {(f.confidence * 100).toFixed(0)}%{f.bbox ? " · 可定位" : ""}</span>
+              <span className="cf"> · {(f.confidence * 100).toFixed(0)}%</span>
             </span>
           </div>
         ))}

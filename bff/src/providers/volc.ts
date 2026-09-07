@@ -32,8 +32,7 @@ export interface UploadedFile {
 
 const IMAGE_PROMPT = `你是票据/证照/图片结构化助手。识别图片内容并只返回一个 JSON 对象，字段：
 - layout: 版式标识，如 "vat_invoice"(增值税发票) / "id_card"(身份证) / "bank_card" / "business_license" / "receipt" / "generic"(其它)
-- fields: 数组，每项 {key, label(中文), value(字符串), confidence(0-1), bbox}；尽量抽全关键字段。
-  bbox 为该字段文字在图片中的像素坐标 [左, 上, 右, 下]（以图片左上角为原点、真实像素为单位）；无法定位时省略 bbox。
+- fields: 数组，每项 {key, label(中文), value(字符串), confidence(0-1)}；尽量抽全关键字段。
 - line_items: 数组（仅票据类），每项 {name, amount(数字), tax(数字)}；无则给 []
 - full_text: 图片中的完整文字（保留换行）
 - summary: 一句话说明这张图是什么
@@ -47,7 +46,7 @@ export async function cleanImage(file: UploadedFile): Promise<ImageResult> {
   }
   const dataUrl = `data:${file.mimetype};base64,${file.buffer.toString("base64")}`;
   const out = await arkChat({
-    model: config.ark.modelVision,
+    model: config.ark.modelImage,
     jsonObject: true,
     disableThinking: true,
     messages: [

@@ -40,7 +40,8 @@ export const config = {
     apiKey: env("ARK_API_KEY"),
     baseUrl: env("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),
     modelText: env("ARK_MODEL_TEXT", "doubao-seed-2-1-turbo"),
-    modelVision: env("ARK_MODEL_VISION", "doubao-seed-2-1-pro"),
+    modelVision: env("ARK_MODEL_VISION", "doubao-seed-2-1-turbo"), // 视频抽帧描述（重速度/成本）
+    modelImage: env("ARK_MODEL_IMAGE", "doubao-seed-1-6-vision"), // 图片结构化（需字段 grounding）
   },
 } as const;
 
