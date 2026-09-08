@@ -14,12 +14,16 @@ data-cleansing/
 │     ├─ mock.ts           内置样例数据
 │     ├─ providers/volc.ts 火山调用封装（mock / live 分支）
 │     └─ types.ts          结果数据结构（PRD 第 07 节）
-└─ web/          React + Vite + TS 前端 SPA
-   └─ src/
-      ├─ App.tsx           三栏布局 + 状态机
-      ├─ api.ts            调用 BFF
-      ├─ components/       TypeMenu / UploadPanel / results/*
-      └─ types.ts          与 bff/src/types.ts 同步
+├─ web/          React + Vite + TS 前端 SPA
+│  ├─ src/
+│  │  ├─ App.tsx           三栏布局 + 状态机
+│  │  ├─ api.ts            调用 BFF
+│  │  ├─ components/       TypeMenu / UploadPanel / results/*
+│  │  └─ types.ts          与 bff/src/types.ts 同步
+│  ├─ Dockerfile           vite build → nginx
+│  └─ nginx.conf           静态托管 + /api 反代
+├─ samples/       冒烟测试样本（invoice.jpg / meeting.wav / demo.mp4）
+└─ docker-compose.yaml
 ```
 
 ## 快速开始（mock 模式，无需密钥）
@@ -47,7 +51,9 @@ cp .env.example .env    # 填入火山密钥，CLEANSING_MODE=live
 docker compose up -d --build
 ```
 
-打开 **http://localhost:8080**。结构：
+打开 **http://localhost:8080**，把 `samples/` 里的三个文件分别拖进去可快速验证三条链路。
+
+结构：
 
 - `web`（nginx，:8080）托管 `vite build` 出的静态站点，`/api`（含 WebSocket `/api/video/stream`）反代到 `bff`
 - `bff`（Node，:8787）编译后的 Express + ws，用系统 `ffmpeg`（`FFMPEG_PATH`）
@@ -67,8 +73,11 @@ docker compose up -d --build
 
 ## 脚本（本地 Node 开发）
 
+不走 Docker、直接在宿主机跑时，先 `npm install`（仓库不含 `node_modules`）。
+
 | 命令 | 作用 |
 |---|---|
+| `npm install` | 安装依赖（根 + bff + web，npm workspaces） |
 | `npm run dev` | 并行启动 bff(:8787) + web(:5173)，带热更新 |
 | `npm run build` | 构建两端 |
 | `npm run typecheck` | 两端类型检查 |

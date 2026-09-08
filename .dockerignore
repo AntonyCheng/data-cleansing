@@ -11,6 +11,7 @@ tmp
 uploads
 exports
 telemetry
+samples
 *.log
 
 # 密钥：不打进镜像，运行时用 env_file 注入
