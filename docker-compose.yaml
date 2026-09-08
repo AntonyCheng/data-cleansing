@@ -1,0 +1,52 @@
+name: data-cleansing
+
+services:
+  bff:
+    build:
+      context: .
+      dockerfile: bff/Dockerfile
+    image: data-cleansing-bff
+    # 全部火山密钥从仓库根 .env 注入（不进镜像）
+    env_file:
+      - .env
+    environment:
+      BFF_PORT: "8787"
+      # 浏览器实际访问的地址（nginx 端口），用于 CORS
+      WEB_ORIGIN: "http://localhost:8080"
+      FFMPEG_PATH: /usr/bin/ffmpeg
+    ports:
+      - "8787:8787" # 直连调试用，可删
+    volumes:
+      - ./exports:/app/exports # 数仓回传落盘
+      - ./telemetry:/app/telemetry # 埋点落盘
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://localhost:8787/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    mem_limit: 1536m
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    image: data-cleansing-web
+    ports:
+      - "8080:80" # 打开 http://localhost:8080
+    depends_on:
+      bff:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    mem_limit: 128m
+    restart: unless-stopped

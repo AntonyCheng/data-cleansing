@@ -1,0 +1,36 @@
+# 依赖与产物（镜像内重新安装 / 构建）
+node_modules
+**/node_modules
+dist
+**/dist
+.vite
+**/.vite
+
+# 本地数据 / 运行时目录（用挂载卷）
+tmp
+uploads
+exports
+telemetry
+*.log
+
+# 密钥：不打进镜像，运行时用 env_file 注入
+.env
+.env.local
+
+# 版本控制 / 编辑器 / 文档
+.git
+.gitignore
+.gitattributes
+.DS_Store
+.claude
+.vscode
+.idea
+README.md
+**/*.md
+
+# Docker 自身
+Dockerfile
+**/Dockerfile
+docker-compose*.yaml
+docker-compose*.yml
+.dockerignore

@@ -6,7 +6,17 @@ import { promisify } from "node:util";
 import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
 
 const run = promisify(execFile);
-const FFMPEG = ffmpegInstaller.path;
+
+/** Docker / CI 里用系统 ffmpeg（FFMPEG_PATH）；本地回退到 @ffmpeg-installer 自带二进制 */
+function resolveFfmpeg(): string {
+  if (process.env.FFMPEG_PATH) return process.env.FFMPEG_PATH;
+  try {
+    return ffmpegInstaller.path;
+  } catch {
+    return "ffmpeg";
+  }
+}
+const FFMPEG = resolveFfmpeg();
 
 /** 上限：避免超长视频把成本 / 时间打爆（PRD VID-4 护栏的 MVP 版） */
 export const MAX_FRAMES = 30;

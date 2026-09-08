@@ -20,7 +20,8 @@ import type { TaskEnvelope, TaskType } from "./types.js";
 
 const app = express();
 app.use(cors({ origin: config.webOrigin }));
-app.use(express.json({ limit: "1mb" }));
+// 数仓回传的视频 envelope 可能带多张缩略帧 data URI，放宽 JSON 体积上限
+app.use(express.json({ limit: "25mb" }));
 
 const upload = multer({
   storage: multer.memoryStorage(),

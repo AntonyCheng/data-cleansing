@@ -40,11 +40,36 @@ npm run dev             # 同时起 bff(:8787) 和 web(:5173)
 3. 在 `bff/src/providers/volc.ts` 里把 `notImpl(...)` 桩按官方文档补全（PRD 跟进项 F2）。
    `GET /api/health` 会列出缺失的配置项。
 
-## 脚本
+## Docker 启动（推荐，省内存）
+
+```bash
+cp .env.example .env    # 填入火山密钥，CLEANSING_MODE=live
+docker compose up -d --build
+```
+
+打开 **http://localhost:8080**。结构：
+
+- `web`（nginx，:8080）托管 `vite build` 出的静态站点，`/api`（含 WebSocket `/api/video/stream`）反代到 `bff`
+- `bff`（Node，:8787）编译后的 Express + ws，用系统 `ffmpeg`（`FFMPEG_PATH`）
+- 火山密钥经 `env_file: .env` 注入容器，**不打进镜像**
+- `./exports` `./telemetry` 挂载卷持久化数仓回传与埋点
+- `WEB_ORIGIN` 在 compose 里覆盖为 `http://localhost:8080`
 
 | 命令 | 作用 |
 |---|---|
-| `npm run dev` | 并行启动 bff + web |
+| `docker compose up -d --build` | 构建并后台启动 |
+| `docker compose logs -f bff` | 看 BFF 日志 |
+| `docker compose down` | 停止并删除容器 |
+| `docker compose up -d --build web` | 只改了前端 / nginx.conf 时重建 web |
+| `docker compose restart bff` | 改了 `.env` 后重启 bff 生效 |
+
+改后端源码要 `--build` 重新构建 bff（生产镜像不带 watch）。
+
+## 脚本（本地 Node 开发）
+
+| 命令 | 作用 |
+|---|---|
+| `npm run dev` | 并行启动 bff(:8787) + web(:5173)，带热更新 |
 | `npm run build` | 构建两端 |
 | `npm run typecheck` | 两端类型检查 |
 
