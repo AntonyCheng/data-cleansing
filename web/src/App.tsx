@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { cleanAudio, cleanImage, exportToWarehouse, getHealth, openVideoStream, uploadVideo } from "./api";
+import { openTaskStream, peekTask, startTask } from "./api";
 import { track } from "./telemetry";
 import { HistoryDrawer } from "./components/HistoryDrawer";
 import { TypeMenu } from "./components/TypeMenu";
@@ -13,20 +13,29 @@ import type {
   FrameEvent,
   ImageField,
   ImageResult,
+  JobStatus,
   Subtitle,
   TaskEnvelope,
+  TaskStreamMsg,
   TaskType,
   VideoResult,
-  VideoStreamMsg,
 } from "./types";
 
 type ImgEnv = TaskEnvelope<ImageResult>;
 type AudEnv = TaskEnvelope<AudioResult>;
 type Phase = "idle" | "uploading" | "cleaning" | "done" | "error";
 
+const ALL_TYPES: TaskType[] = ["image", "audio", "video"];
+
+/** 从任意类型的完整 envelope 里抠出一句话摘要，给历史列表用 */
+function summaryTextOf(env: TaskEnvelope): string {
+  if (env.type === "image") return (env.result as ImageResult).summary;
+  if (env.type === "audio") return (env.result as AudioResult).summary.tldr;
+  return (env.result as VideoResult).summary;
+}
+
 export function App() {
   const [type, setType] = useState<TaskType>("image");
-  const [health, setHealth] = useState<{ mode: string } | null>(null);
 
   const [file, setFile] = useState<File | null>(null);
   const [phase, setPhase] = useState<Phase>("idle");
@@ -35,8 +44,10 @@ export function App() {
 
   const [imgEnv, setImgEnv] = useState<ImgEnv | null>(null);
   const [audEnv, setAudEnv] = useState<AudEnv | null>(null);
+  // 当前接上的任务（不管是历史回看还是后台任务槽）对应的原始素材地址，与本地刚选的 objectUrl 互斥
+  const [attachedMediaUrl, setAttachedMediaUrl] = useState<string | null>(null);
 
-  // 视频"边播边析"实时状态
+  // 视频"边播边析"实时状态（回放历史消息 / 实时推送用的是同一套 apply 逻辑）
   const [subs, setSubs] = useState<Subtitle[]>([]);
   const [events, setEvents] = useState<FrameEvent[]>([]);
   const [vSummary, setVSummary] = useState<VideoResult | null>(null);
@@ -44,165 +55,131 @@ export function App() {
   const wsRef = useRef<WebSocket | null>(null);
   const videoElRef = useRef<HTMLVideoElement>(null);
   const lastFilename = useRef<string>("");
+  // 当前任务流里最新一条 result 消息（完整 envelope），done 到达时拿它存历史
+  const pendingEnvelope = useRef<TaskEnvelope | null>(null);
 
-  // 会话费用 + 历史
-  const [sessionCost, setSessionCost] = useState(0);
-  const [sessionCalls, setSessionCalls] = useState(0);
+  // 哪些类型后台还有任务在跑（不含当前正在看的那个），驱动左侧菜单的小红点
+  const [runningTypes, setRunningTypes] = useState<Set<TaskType>>(new Set());
+
+  // 会话历史
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [warehouseMsg, setWarehouseMsg] = useState<string | null>(null);
-
-  async function sendToWarehouse(envelope: unknown) {
-    setWarehouseMsg("回传中…");
-    try {
-      await exportToWarehouse(envelope);
-      setWarehouseMsg("已回传数仓");
-      track("export", { via: "warehouse", type });
-    } catch (e) {
-      setWarehouseMsg(`回传失败：${e instanceof Error ? e.message : String(e)}`);
-    }
-    setTimeout(() => setWarehouseMsg(null), 4000);
-  }
-
-  useEffect(() => {
-    getHealth().then((h) => setHealth(h)).catch(() => setHealth({ mode: "unknown" }));
-    setHistory(listHistory());
-  }, []);
 
   const objectUrl = useMemo(() => (file ? URL.createObjectURL(file) : null), [file]);
   useEffect(() => () => { if (objectUrl) URL.revokeObjectURL(objectUrl); }, [objectUrl]);
-
-  function resetResults() {
-    setImgEnv(null);
-    setAudEnv(null);
-    setSubs([]);
-    setEvents([]);
-    setVSummary(null);
-    setError(null);
-    setPhase("idle");
-    setViewingHistory(false);
-    wsRef.current?.close();
-    wsRef.current = null;
-  }
-
-  function switchType(t: TaskType) {
-    if (t === type) return;
-    const hasResult = imgEnv || audEnv || vSummary || subs.length;
-    if (hasResult && !viewingHistory && !window.confirm("当前结果尚未导出，切换类型将清空，确定？")) return;
-    setType(t);
-    setFile(null);
-    resetResults();
-  }
-
-  function pickFile(f: File) {
-    resetResults();
-    setFile(f);
-  }
-
-  function recordSpend(cny: number, calls: number) {
-    setSessionCost((c) => c + cny);
-    setSessionCalls((n) => n + calls);
-  }
+  // 当前上传的临时预览优先；否则用任务槽/历史记录里落盘的原始素材
+  const previewUrl = objectUrl ?? attachedMediaUrl;
 
   function saveToHistory(env: TaskEnvelope, filename: string, summary: string) {
     lastFilename.current = filename;
     setHistory(addHistory(env, filename, summary));
   }
 
-  async function runClean() {
-    if (!file) return;
-    setError(null);
-    setViewingHistory(false);
-    const t0 = Date.now();
-    track("task_start", { type, size: file.size });
-    try {
-      setPhase("cleaning");
-      if (type === "image") {
-        const env = await cleanImage(file);
-        setImgEnv(env);
-        recordSpend(env.cost_estimate_cny, env.cost_calls?.length ?? 1);
-        saveToHistory(env, file.name, env.result.summary);
-        setPhase("done");
-        track("task_success", { type, ms: Date.now() - t0, cny: env.cost_estimate_cny, layout: env.result.layout });
-      } else if (type === "audio") {
-        const env = await cleanAudio(file);
-        setAudEnv(env);
-        recordSpend(env.cost_estimate_cny, env.cost_calls?.length ?? 1);
-        saveToHistory(env, file.name, env.result.summary.tldr);
-        setPhase("done");
-        track("task_success", { type, ms: Date.now() - t0, cny: env.cost_estimate_cny, lines: env.result.transcript.length });
-      } else {
-        const { id } = await uploadVideo(file);
-        startVideoStream(id, file.name, t0);
-      }
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      setError(message);
-      setPhase("error");
-      track("task_fail", { type, ms: Date.now() - t0, message: message.slice(0, 120) });
-    }
-  }
-
-  function startVideoStream(id: string, filename: string, t0: number) {
+  /** 清空当前展示态（不影响服务端任务槽本身——它该怎么跑还怎么跑） */
+  function clearView() {
+    wsRef.current?.close();
+    wsRef.current = null;
+    pendingEnvelope.current = null;
+    setImgEnv(null);
+    setAudEnv(null);
+    setAttachedMediaUrl(null);
     setSubs([]);
     setEvents([]);
     setVSummary(null);
-    const collectedSubs: Subtitle[] = [];
-    const collectedEvents: FrameEvent[] = [];
-    let summaryData: Pick<VideoResult, "chapters" | "summary" | "tags" | "entities"> | null = null;
+    setError(null);
+    setViewingHistory(false);
+  }
 
-    const ws = openVideoStream(id, frameIntervalMs);
+  /** 接上某类型的任务流：先回放它已有的进度，任务还在跑的话继续实时收新消息。
+   *  首次挂载、切换类型、刚提交完任务，都走这一条路——效果上就是"随时查看当前进度"。 */
+  function attachToType(t: TaskType) {
+    clearView();
+    setPhase("idle");
+    const ws = openTaskStream(t);
     wsRef.current = ws;
-    ws.onopen = () => videoElRef.current?.play().catch(() => {});
     ws.onmessage = (ev) => {
-      const msg = JSON.parse(ev.data as string) as VideoStreamMsg;
-      if (msg.kind === "subtitle") {
-        collectedSubs.push(msg.data);
+      const msg = JSON.parse(ev.data as string) as TaskStreamMsg;
+      if (msg.kind === "no_job") {
+        setPhase("idle");
+      } else if (msg.kind === "status") {
+        lastFilename.current = msg.data.filename;
+        if (msg.data.media_url) setAttachedMediaUrl(msg.data.media_url);
+        setPhase(msg.data.status === "running" ? "cleaning" : msg.data.status === "error" ? "error" : "done");
+      } else if (msg.kind === "result") {
+        pendingEnvelope.current = msg.data;
+        setAttachedMediaUrl(msg.data.source.media_url ?? null);
+        if (t === "image") setImgEnv(msg.data as ImgEnv);
+        else if (t === "audio") setAudEnv(msg.data as AudEnv);
+      } else if (msg.kind === "subtitle") {
         setSubs((s) => [...s, msg.data]);
       } else if (msg.kind === "frame_event") {
-        collectedEvents.push(msg.data);
         setEvents((e) => [...e, msg.data]);
       } else if (msg.kind === "summary") {
-        summaryData = msg.data;
-        setVSummary({ subtitles: [], frame_events: [], ...msg.data });
-      } else if (msg.kind === "cost") {
-        recordSpend(msg.data.cny, msg.data.calls.length);
+        setVSummary((v) => ({ subtitles: v?.subtitles ?? [], frame_events: v?.frame_events ?? [], ...msg.data }));
       } else if (msg.kind === "error") {
         setError(msg.data.message);
         setPhase("error");
       } else if (msg.kind === "done") {
         setPhase("done");
-        track("task_success", {
-          type: "video",
-          ms: Date.now() - t0,
-          frames: collectedEvents.length,
-          subs: collectedSubs.length,
-        });
-        if (summaryData) {
-          const env: TaskEnvelope<VideoResult> = {
-            task_id: `tsk_video_${id.slice(0, 8)}`,
-            type: "video",
-            source: { filename, tos_url: "", duration_ms: 0 },
-            provider: { vendor: "volcengine", apis: ["ark.doubao-vision", "speech.seedasr.auc"] },
-            status: "succeeded",
-            cost_estimate_cny: 0,
-            created_at: new Date().toISOString(),
-            human_edited: false,
-            result: {
-              subtitles: collectedSubs,
-              frame_events: collectedEvents,
-              ...summaryData,
-            },
-          };
-          saveToHistory(env, filename, summaryData.summary);
+        track("task_success", { type: t });
+        if (pendingEnvelope.current) {
+          saveToHistory(pendingEnvelope.current, pendingEnvelope.current.source.filename, summaryTextOf(pendingEnvelope.current));
         }
       }
+      // kind === "cost"：界面不展示调用成本，忽略
     };
-    ws.onerror = () => { setError("实时分析连接异常"); setPhase("error"); };
-    ws.onclose = () => {
-      wsRef.current = null;
-      setPhase((p) => (p === "cleaning" ? "done" : p));
-    };
+    ws.onerror = () => setError("与服务端的实时连接异常");
+    ws.onclose = () => { wsRef.current = null; };
+  }
+
+  useEffect(() => {
+    setHistory(listHistory());
+    attachToType(type); // 页面一打开就接上默认类型，重开浏览器也能看到上次留下的进度/结果
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 左侧菜单小红点：轻量轮询三个类型的后台状态，不影响当前正在看的那个类型
+  useEffect(() => {
+    let cancelled = false;
+    async function poll() {
+      const results = await Promise.all(
+        ALL_TYPES.map((t) => peekTask(t).catch((): { hasJob: boolean; status?: JobStatus } => ({ hasJob: false }))),
+      );
+      if (cancelled) return;
+      const next = new Set<TaskType>();
+      ALL_TYPES.forEach((t, i) => { if (results[i].status === "running") next.add(t); });
+      setRunningTypes(next);
+    }
+    void poll();
+    const timer = setInterval(poll, 4000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, []);
+
+  function switchType(t: TaskType) {
+    if (t === type) return;
+    setType(t);
+    setFile(null);
+    attachToType(t);
+  }
+
+  function pickFile(f: File) {
+    clearView();
+    setPhase("idle");
+    setFile(f);
+  }
+
+  async function runClean() {
+    if (!file) return;
+    setError(null);
+    setPhase("uploading");
+    track("task_start", { type, size: file.size });
+    try {
+      await startTask(type, file, type === "video" ? { frameIntervalMs } : undefined);
+      attachToType(type); // 提交成功后立刻接上，从头看着它跑
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setPhase("error");
+    }
   }
 
   function seekVideo(ms: number) {
@@ -228,14 +205,15 @@ export function App() {
     });
   }
 
-  // ---- 历史回看 ----
+  // ---- 历史回看：纯本地静态快照，与任务槽无关，先断开当前任务流的连接 ----
   function openHistoryItem(item: HistoryItem) {
     setHistoryOpen(false);
+    clearView();
     setFile(null);
-    resetResults();
     setViewingHistory(true);
     setType(item.type);
     setPhase("done");
+    setAttachedMediaUrl(item.envelope.source.media_url ?? null);
     if (item.type === "image") setImgEnv(item.envelope as ImgEnv);
     else if (item.type === "audio") setAudEnv(item.envelope as AudEnv);
     else {
@@ -250,28 +228,26 @@ export function App() {
     <div className="shell">
       <header className="topbar">
         <span className="brand">
-          <b>多模态</b> 数据清洗台
+          <span className="brand-tile" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z" />
+              <path d="m6.08 9.16-3.5 1.6a1 1 0 0 0 0 1.81l8.58 3.91a2 2 0 0 0 1.65 0l8.58-3.9a1 1 0 0 0 0-1.81l-3.5-1.6" />
+              <path d="m6.08 14.16-3.5 1.6a1 1 0 0 0 0 1.81l8.58 3.91a2 2 0 0 0 1.65 0l8.58-3.9a1 1 0 0 0 0-1.83l-3.5-1.59" />
+            </svg>
+          </span>
+          <span className="brand-text"><b>多模态</b>数据清洗台</span>
         </span>
         <div className="spacer" />
-        <span className="chip" title="本会话预估调用费用（以火山计费为准）">
-          ¥{sessionCost.toFixed(3)} · {sessionCalls} 次
-        </span>
-        {warehouseMsg && <span className="chip mode-live">{warehouseMsg}</span>}
         <button
           className="chip chip-btn"
           onClick={() => { setHistoryOpen(true); track("history_open", { count: history.length }); }}
         >
           历史 {history.length > 0 ? `· ${history.length}` : ""}
         </button>
-        {health && (
-          <span className={`chip mode-${health.mode}`}>
-            {health.mode === "mock" ? "MOCK 样例模式" : health.mode === "live" ? "LIVE 火山引擎" : health.mode}
-          </span>
-        )}
       </header>
 
       <div className="body">
-        <TypeMenu active={type} onChange={switchType} />
+        <TypeMenu active={type} running={runningTypes} onChange={switchType} />
 
         <div className="work">
           <section className="panel upload">
@@ -284,7 +260,7 @@ export function App() {
               frameIntervalMs={frameIntervalMs}
               onFrameIntervalChange={(ms) => { setFrameIntervalMs(ms); track("frame_interval_change", { ms }); }}
               onPick={pickFile}
-              onClear={() => { setFile(null); resetResults(); }}
+              onClear={() => { setFile(null); setPhase("idle"); }}
               onClean={runClean}
             />
           </section>
@@ -298,30 +274,27 @@ export function App() {
               <ImageResultView
                 env={imgEnv}
                 phase={phase}
-                previewUrl={objectUrl}
+                previewUrl={previewUrl}
                 onEditFields={editImageFields}
-                onWarehouse={() => imgEnv && sendToWarehouse(imgEnv)}
               />
             )}
             {type === "audio" && (
               <AudioResultView
                 env={audEnv}
                 phase={phase}
-                previewUrl={objectUrl}
+                previewUrl={previewUrl}
                 onEditTldr={editAudioSummary}
-                onWarehouse={() => audEnv && sendToWarehouse(audEnv)}
               />
             )}
             {type === "video" && (
               <VideoResultView
-                previewUrl={objectUrl}
+                previewUrl={previewUrl}
                 videoRef={videoElRef}
                 subtitles={subs}
                 events={events}
                 summary={vSummary}
                 phase={phase}
                 onSeek={seekVideo}
-                onWarehouse={(env) => sendToWarehouse(env)}
               />
             )}
           </section>
@@ -334,6 +307,7 @@ export function App() {
         onClose={() => setHistoryOpen(false)}
         onOpenItem={openHistoryItem}
         onCleared={() => setHistory([])}
+        onItemDeleted={setHistory}
       />
     </div>
   );

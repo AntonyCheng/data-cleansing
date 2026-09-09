@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { appendFile, mkdir } from "node:fs/promises";
 import http from "node:http";
 import { dirname, join } from "node:path";
@@ -6,50 +5,35 @@ import { fileURLToPath } from "node:url";
 import cors from "cors";
 import express from "express";
 import multer from "multer";
-import { WebSocketServer } from "ws";
+import { WebSocket, WebSocketServer } from "ws";
 import { assertLiveConfig, config } from "./config.js";
-import { type CostAcc, newCostAcc, runWithAcc, withCost } from "./cost.js";
-import {
-  cleanAudio,
-  cleanImage,
-  cleanVideo,
-  streamVideo,
-  type UploadedFile,
-} from "./providers/volc.js";
-import type { TaskEnvelope, TaskType } from "./types.js";
+import { attach, createJob, loadJobsFromDisk, peek } from "./jobs.js";
+import { mountMediaRoute, saveMedia } from "./media.js";
+import type { TaskStreamMsg, TaskType } from "./types.js";
+
+// 兜底：任何位置漏掉的未捕获 rejection 只记日志，不崩进程——后台任务槽的核心价值就是
+// "浏览器怎么折腾都不影响服务端"，如果一个偶发错误就能把整个进程干崩、被 Docker 拉起来
+// 重启，所有正在跑的任务全部丢失，这个承诺就是假的。
+process.on("unhandledRejection", (reason) => {
+  console.error("[bff] 未捕获的 Promise rejection（已拦截，进程继续跑）:", reason);
+});
 
 const app = express();
 app.use(cors({ origin: config.webOrigin }));
-// 数仓回传的视频 envelope 可能带多张缩略帧 data URI，放宽 JSON 体积上限
 app.use(express.json({ limit: "25mb" }));
+mountMediaRoute(app);
 
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 500 * 1024 * 1024 },
 });
 
-function envelope<R>(
-  type: TaskType,
-  file: UploadedFile,
-  apis: string[],
-  result: R,
-  cost?: CostAcc,
-): TaskEnvelope<R> {
-  return {
-    task_id: `tsk_${new Date().toISOString().slice(0, 10).replace(/-/g, "")}_${randomUUID().slice(0, 8)}`,
-    type,
-    source: { filename: file.originalname, tos_url: "", duration_ms: 0 },
-    provider: { vendor: "volcengine", apis },
-    status: "succeeded",
-    cost_estimate_cny: Number((cost?.cny ?? 0).toFixed(4)),
-    cost_calls: cost?.calls,
-    created_at: new Date().toISOString(),
-    human_edited: false,
-    result,
-  };
+const TASK_TYPES: TaskType[] = ["image", "audio", "video"];
+function isTaskType(v: string): v is TaskType {
+  return (TASK_TYPES as string[]).includes(v);
 }
 
-function requireFile(req: express.Request): UploadedFile {
+function requireFile(req: express.Request): { buffer: Buffer; originalname: string; mimetype: string; size: number } {
   if (!req.file) throw Object.assign(new Error("未收到文件"), { code: "NO_FILE", status: 400 });
   return {
     buffer: req.file.buffer,
@@ -77,52 +61,30 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
-app.post("/api/image/clean", upload.single("file"), async (req, res, next) => {
+// ---- 后台任务槽：每类型最多一个在跑，与浏览器连接生命周期解耦 ----
+
+app.post("/api/task/:type/start", upload.single("file"), async (req, res, next) => {
   try {
+    const { type } = req.params;
+    if (!isTaskType(type)) throw Object.assign(new Error("未知任务类型"), { code: "BAD_TYPE", status: 400 });
     const file = requireFile(req);
-    const { result, cost } = await withCost(() => cleanImage(file));
-    res.json(envelope("image", file, ["ark.doubao-vision"], result, cost));
+    const media = await saveMedia(file);
+    const frameIntervalMs =
+      type === "video"
+        ? Math.min(10000, Math.max(2000, Number(req.body?.frame_interval_ms ?? "3000")))
+        : undefined;
+    const job = createJob(type, file, media.url, media.path, frameIntervalMs);
+    res.status(202).json({ taskId: job.id });
   } catch (e) {
     next(e);
   }
 });
 
-app.post("/api/audio/clean", upload.single("file"), async (req, res, next) => {
-  try {
-    const file = requireFile(req);
-    const { result, cost } = await withCost(() => cleanAudio(file));
-    res.json(envelope("audio", file, ["tos", "speech.seedasr.auc", "ark.doubao-text"], result, cost));
-  } catch (e) {
-    next(e);
-  }
-});
-
-app.post("/api/video/clean", upload.single("file"), async (req, res, next) => {
-  try {
-    const file = requireFile(req);
-    const result = await cleanVideo(file);
-    res.json(envelope("video", file, ["ark.doubao-video"], result));
-  } catch (e) {
-    next(e);
-  }
-});
-
-// 视频"边播边析"：先上传拿 id，再用 WebSocket 拉流式结果
-const videoStore = new Map<string, { buffer: Buffer; name: string; ts: number }>();
-setInterval(() => {
-  const now = Date.now();
-  for (const [k, v] of videoStore) if (now - v.ts > 15 * 60_000) videoStore.delete(k);
-}, 60_000).unref();
-
-app.post("/api/video/upload", upload.single("file"), (req, res, next) => {
-  try {
-    const file = requireFile(req);
-    const id = randomUUID();
-    videoStore.set(id, { buffer: file.buffer, name: file.originalname, ts: Date.now() });
-    res.json({ id, filename: file.originalname });
-  } catch (e) {
-    next(e);
-  }
+// 轻量状态：左侧菜单「后台还在跑」小标识轮询用
+app.get("/api/task/:type/peek", (req, res, next) => {
+  const { type } = req.params;
+  if (!isTaskType(type)) return next(Object.assign(new Error("未知任务类型"), { code: "BAD_TYPE", status: 400 }));
+  res.json(peek(type));
 });
 
 // 数仓回传（本期落 exports/*.jsonl，占位真实数仓对接）
@@ -155,47 +117,39 @@ app.use((err: unknown, _req: express.Request, res: express.Response, _next: expr
 });
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: "/api/video/stream" });
+const wss = new WebSocketServer({ server, path: "/api/task/stream" });
 
 wss.on("connection", (ws, req) => {
   const url = new URL(req.url ?? "", `http://${req.headers.host}`);
-  const id = url.searchParams.get("id") ?? "";
-  const frameIntervalMs = Math.min(
-    10000,
-    Math.max(2000, Number(url.searchParams.get("frame_interval_ms") ?? "3000")),
-  );
-
-  let closed = false;
-  ws.on("close", () => { closed = true; });
-
-  const entry = videoStore.get(id);
-  if (config.mode === "live" && !entry) {
-    ws.send(JSON.stringify({ kind: "error", data: { code: "NO_VIDEO", message: "视频未找到或已过期，请重新上传" } }));
+  const type = url.searchParams.get("type") ?? "";
+  if (!isTaskType(type)) {
+    ws.send(JSON.stringify({ kind: "error", data: { code: "BAD_TYPE", message: "未知任务类型" } }));
     ws.close();
     return;
   }
 
-  const acc = newCostAcc();
-  runWithAcc(acc, () => {
-    void (async () => {
-      try {
-        for await (const msg of streamVideo({ buffer: entry?.buffer ?? Buffer.alloc(0), frameIntervalMs })) {
-          if (closed) return;
-          if (msg.kind === "done") {
-            ws.send(JSON.stringify({ kind: "cost", data: { cny: Number(acc.cny.toFixed(4)), calls: acc.calls } }));
-          }
-          ws.send(JSON.stringify(msg));
-        }
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        if (!closed) ws.send(JSON.stringify({ kind: "error", data: { code: "STREAM_FAIL", message } }));
-      } finally {
-        if (id) videoStore.delete(id);
-        if (!closed) ws.close();
-      }
-    })();
-  });
+  // done/error 在这套模型里永远是任务的最后一条消息（见 jobs.ts），发完就可以关连接了——
+  // 不管是刚连上时回放到的，还是正连着时任务才跑完的，都走这一条路径
+  const send = (msg: TaskStreamMsg) => {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify(msg));
+    if (msg.kind === "done" || msg.kind === "error") ws.close();
+  };
+
+  const { replay, status, filename, mediaUrl, unsubscribe } = attach(type, send);
+  ws.on("close", unsubscribe);
+
+  if (!status) {
+    send({ kind: "no_job" });
+    ws.close();
+    return;
+  }
+  send({ kind: "status", data: { status, filename: filename ?? "", media_url: mediaUrl ?? "" } });
+  for (const msg of replay) send(msg);
 });
+
+// 任务槽必须在开始接请求之前恢复完，否则重启瞬间 peek/attach 会看到一个假的「没有任务」
+await loadJobsFromDisk();
 
 server.listen(config.port, () => {
   console.log(`[bff] listening on http://localhost:${config.port}  mode=${config.mode}`);

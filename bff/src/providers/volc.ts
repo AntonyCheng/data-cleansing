@@ -2,18 +2,8 @@
 
 import { extname } from "node:path";
 import { config } from "../config.js";
-import {
-  mockAudioResult,
-  mockImageResult,
-  mockVideoResult,
-  mockVideoStream,
-} from "../mock.js";
-import type {
-  AudioResult,
-  ImageResult,
-  VideoResult,
-  VideoStreamMsg,
-} from "../types.js";
+import { mockAudioResult, mockImageResult, mockVideoStream } from "../mock.js";
+import type { AudioResult, ImageResult, TaskStreamMsg, VideoResult } from "../types.js";
 import { arkChat, parseJsonLoose } from "./ark.js";
 import { recognizeAudio } from "./speech.js";
 import { putAndSign } from "./tos.js";
@@ -120,16 +110,7 @@ export async function cleanAudio(file: UploadedFile): Promise<AudioResult> {
   };
 }
 
-// ---------------- 视频（M3 前保持 mock / 桩） ----------------
-
-export async function cleanVideo(file: UploadedFile): Promise<VideoResult> {
-  if (config.mode === "mock") {
-    await delay(1200);
-    return mockVideoResult;
-  }
-  void file;
-  throw Object.assign(new Error("视频整片非实时分析暂用流式接口，见 /api/video/stream"), { code: "NOT_IMPLEMENTED" });
-}
+// ---------------- 视频（统一走后台任务槽的流式分析，见 jobs.ts） ----------------
 
 const FRAME_PROMPT = `描述这一帧视频画面，只返回 JSON：
 { "caption": "一句话中文描述画面内容", "tags": ["3-6 个中文标签"] }
@@ -156,6 +137,55 @@ async function captionFrame(jpeg: Buffer): Promise<{ caption: string; tags: stri
   return { caption: p.caption ?? "", tags: p.tags ?? [] };
 }
 
+/** 批量：一次视觉调用理解多帧，减少 API 往返 */
+const BATCH_FRAME_PROMPT = (n: number) => `这是一段视频按时间先后等间隔抽取的 ${n} 帧画面。请按顺序逐帧理解，只返回一个 JSON 对象：
+{ "frames": [{ "caption": "一句话中文描述该帧画面", "tags": ["3-6 个中文标签"] }, ...] }
+frames 数组长度必须恰好为 ${n}，与图片顺序一一对应。
+caption 只描述画面内容本身，不要携带"第N帧"、时间码等任何前缀。不要输出 JSON 以外内容。`;
+
+async function captionFrames(jpegs: Buffer[]): Promise<{ caption: string; tags: string[] }[]> {
+  const out = await arkChat({
+    model: config.ark.modelVision,
+    jsonObject: true,
+    disableThinking: true,
+    maxTokens: 256 * jpegs.length + 256,
+    messages: [
+      { role: "system", content: BATCH_FRAME_PROMPT(jpegs.length) },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: `按顺序描述这 ${jpegs.length} 帧。` },
+          ...jpegs.map(
+            (j): { type: "image_url"; image_url: { url: string } } => ({
+              type: "image_url",
+              image_url: { url: `data:image/jpeg;base64,${j.toString("base64")}` },
+            }),
+          ),
+        ],
+      },
+    ],
+  });
+  const p = parseJsonLoose<{ frames?: { caption?: string; tags?: string[] }[] }>(out);
+  if (!p.frames || p.frames.length !== jpegs.length) {
+    throw new Error(`批量帧描述数量不匹配（期望 ${jpegs.length}，得到 ${p.frames?.length ?? 0}）`);
+  }
+  return p.frames.map((f) => ({ caption: f.caption ?? "", tags: f.tags ?? [] }));
+}
+
+/** 多个异步生成器交错合并：谁先产出谁先出（字幕与画面事件实时穿插下发） */
+async function* interleave<T>(gens: AsyncGenerator<T>[]): AsyncGenerator<T> {
+  type Task = { i: number; r: IteratorResult<T> };
+  const tasks = new Map(gens.map((g, i) => [i, g.next().then((r): Task => ({ i, r }))]));
+  while (tasks.size) {
+    const { i, r } = await Promise.race(tasks.values());
+    tasks.delete(i);
+    if (!r.done) {
+      yield r.value;
+      tasks.set(i, gens[i].next().then((r): Task => ({ i, r })));
+    }
+  }
+}
+
 const VIDEO_SUMMARY_PROMPT = `根据视频的字幕和逐帧画面描述，只返回一个 JSON 对象：
 { "chapters": [{"start_ms": 数字, "end_ms": 数字, "title": "章节标题", "summary": "章节概要"}],
   "summary": "整片一句话摘要",
@@ -165,15 +195,14 @@ const VIDEO_SUMMARY_PROMPT = `根据视频的字幕和逐帧画面描述，只�
 
 /**
  * 视频"边播放边分析"：
- * 1) 后台抽音轨 + 录音识别（并行）
- * 2) 逐帧抽画面送视觉理解，实时吐 frame_event
- * 3) 字幕就绪后吐 subtitle
- * 4) 合并生成章节 / 摘要
+ * 1) 音轨识别与画面理解两条流水线并行，各自就绪即推送（字幕不再等帧分析跑完）
+ * 2) 画面：首帧快车道（单帧先出）+ 其余按批合并调用 / 双路并发，仍按时间序推送
+ * 3) 两边都结束后合并生成章节 / 摘要
  */
 export async function* streamVideo(input: {
   buffer: Buffer;
   frameIntervalMs: number;
-}): AsyncGenerator<VideoStreamMsg> {
+}): AsyncGenerator<TaskStreamMsg> {
   if (config.mode === "mock") {
     for (const msg of mockVideoStream()) {
       await delay(700);
@@ -184,7 +213,8 @@ export async function* streamVideo(input: {
 
   const intervalSec = Math.max(2, input.frameIntervalMs / 1000);
 
-  // 1. 音轨 → 录音识别（后台并行）
+  // ---- 流水线 A：音轨 → 录音识别（先到先推）----
+  const subtitles: { start_ms: number; end_ms: number; text: string }[] = [];
   const asrPromise = (async () => {
     const wav = await extractAudioWav(input.buffer);
     const { url } = await putAndSign(wav, ".wav", "audio/wav");
@@ -194,33 +224,92 @@ export async function* streamVideo(input: {
     return { text: "", lines: [] as { speaker: string; start_ms: number; end_ms: number; text: string }[] };
   });
 
-  // 2. 逐帧画面理解
-  const frames = await extractFrames(input.buffer, intervalSec);
-  const frameEvents: VideoResult["frame_events"] = [];
-  for (const f of frames) {
-    let cap = { caption: "", tags: [] as string[] };
-    try {
-      cap = await captionFrame(f.jpeg);
-    } catch (e) {
-      console.warn("[video] 帧分析失败 @", f.tMs, e instanceof Error ? e.message : e);
+  const subtitleStream = async function* (): AsyncGenerator<TaskStreamMsg> {
+    const { lines } = await asrPromise;
+    for (const l of lines) {
+      const s = { start_ms: l.start_ms, end_ms: l.end_ms, text: l.text };
+      subtitles.push(s);
+      yield { kind: "subtitle", data: s };
     }
-    const ev = {
-      t_ms: f.tMs,
-      thumb_url: `data:image/jpeg;base64,${f.jpeg.toString("base64")}`,
-      caption: cap.caption,
-      tags: cap.tags,
-      scene_change: false,
+  };
+
+  // ---- 流水线 B：逐帧画面理解 ----
+  const BATCH_SIZE = 5;
+  const BATCH_CONCURRENCY = 2;
+  const frameEvents: VideoResult["frame_events"] = [];
+
+  const toEvent = (f: { tMs: number; jpeg: Buffer }, cap: { caption: string; tags: string[] }) => ({
+    t_ms: f.tMs,
+    thumb_url: `data:image/jpeg;base64,${f.jpeg.toString("base64")}`,
+    caption: cap.caption,
+    tags: cap.tags,
+    scene_change: false,
+  });
+
+  const frameStream = async function* (): AsyncGenerator<TaskStreamMsg> {
+    const frames = await extractFrames(input.buffer, intervalSec);
+    if (frames.length === 0) return;
+
+    // 快车道：第 0 帧单独先出，观众几秒内就能看到第一条画面事件
+    {
+      const first = frames[0];
+      let cap = { caption: "", tags: [] as string[] };
+      try {
+        cap = await captionFrame(first.jpeg);
+      } catch (e) {
+        console.warn("[video] 首帧分析失败:", e instanceof Error ? e.message : e);
+      }
+      const ev = toEvent(first, cap);
+      frameEvents.push(ev);
+      yield { kind: "frame_event", data: ev };
+    }
+
+    // 其余帧：5 帧/调用、2 路并发，完成一批推一批（保持时间顺序）
+    const rest = frames.slice(1);
+    const batches: { tMs: number; jpeg: Buffer }[][] = [];
+    for (let i = 0; i < rest.length; i += BATCH_SIZE) batches.push(rest.slice(i, i + BATCH_SIZE));
+    if (batches.length === 0) return;
+
+    const results: (VideoResult["frame_events"] | null)[] = new Array(batches.length).fill(null);
+    let nextBatch = 0;
+    const worker = async () => {
+      while (true) {
+        const i = nextBatch++;
+        if (i >= batches.length) return;
+        try {
+          const caps = await captionFrames(batches[i].map((f) => f.jpeg));
+          results[i] = batches[i].map((f, j) => toEvent(f, caps[j]));
+        } catch (e) {
+          // 批量失败（数量不匹配 / 接口报错）→ 该批回退逐帧
+          console.warn("[video] 批量帧分析失败，回退单帧:", e instanceof Error ? e.message : e);
+          const evs: VideoResult["frame_events"] = [];
+          for (const f of batches[i]) {
+            let cap = { caption: "", tags: [] as string[] };
+            try {
+              cap = await captionFrame(f.jpeg);
+            } catch { /* 单帧失败保留空描述 */ }
+            evs.push(toEvent(f, cap));
+          }
+          results[i] = evs;
+        }
+      }
     };
-    frameEvents.push(ev);
-    yield { kind: "frame_event", data: ev };
-  }
+    void Promise.all(Array.from({ length: Math.min(BATCH_CONCURRENCY, batches.length) }, () => worker()));
 
-  // 3. 字幕
-  const { lines } = await asrPromise;
-  const subtitles = lines.map((l) => ({ start_ms: l.start_ms, end_ms: l.end_ms, text: l.text }));
-  for (const s of subtitles) yield { kind: "subtitle", data: s };
+    // 批完成频率远低于轮询间隔，50ms 轮询足够且无丢唤醒问题
+    for (let nextYield = 0; nextYield < batches.length; nextYield++) {
+      while (results[nextYield] === null) await delay(50);
+      for (const ev of results[nextYield]!) {
+        frameEvents.push(ev);
+        yield { kind: "frame_event", data: ev };
+      }
+    }
+  };
 
-  // 4. 章节 / 摘要
+  // ---- 两条流水线交错推送 ----
+  for await (const msg of interleave([frameStream(), subtitleStream()])) yield msg;
+
+  // ---- 章节 / 摘要 ----
   try {
     const ctx = [
       "字幕：",

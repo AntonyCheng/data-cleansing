@@ -6,7 +6,7 @@ export type TaskStatus = "queued" | "running" | "succeeded" | "failed";
 export interface TaskEnvelope<R = unknown> {
   task_id: string;
   type: TaskType;
-  source: { filename: string; tos_url: string; duration_ms: number };
+  source: { filename: string; tos_url: string; duration_ms: number; media_url?: string };
   provider: { vendor: "volcengine"; apis: string[] };
   status: TaskStatus;
   cost_estimate_cny: number;
@@ -90,7 +90,15 @@ export interface UploadResult {
 }
 
 // ---- 视频实时流（WebSocket 消息）----
-export type VideoStreamMsg =
+// ---- 后台任务槽（每类型最多一个在跑，与浏览器连接生命周期解耦）----
+export type JobStatus = "running" | "done" | "error";
+
+export type TaskStreamMsg =
+  // 接上任务流时的握手：先告诉你有没有任务、目前什么状态，再回放历史消息
+  | { kind: "status"; data: { status: JobStatus; filename: string; media_url: string } }
+  | { kind: "no_job" }
+  // 图片 / 音频是一次性出全量结果，包一层 result 消息，格式上与视频的增量消息统一
+  | { kind: "result"; data: TaskEnvelope }
   | { kind: "subtitle"; data: Subtitle }
   | { kind: "frame_event"; data: FrameEvent }
   | { kind: "summary"; data: Pick<VideoResult, "chapters" | "summary" | "tags" | "entities"> }

@@ -1,6 +1,6 @@
 import type { ImageField, ImageResult, TaskEnvelope } from "../../types";
 import { track } from "../../telemetry";
-import { copyJson, downloadJson } from "../export";
+import { downloadJson } from "../export";
 
 type Phase = "idle" | "uploading" | "cleaning" | "done" | "error";
 
@@ -9,13 +9,11 @@ export function ImageResultView({
   phase,
   previewUrl,
   onEditFields,
-  onWarehouse,
 }: {
   env: TaskEnvelope<ImageResult> | null;
   phase: Phase;
   previewUrl: string | null;
   onEditFields: (fields: ImageField[]) => void;
-  onWarehouse: () => void;
 }) {
   if (phase === "uploading" || phase === "cleaning") {
     return (
@@ -85,9 +83,7 @@ export function ImageResultView({
       <div className="mono-block">{r.full_text}</div>
 
       <div className="export-bar">
-        <button onClick={() => { copyJson(env); track("export", { via: "copy", type: "image" }); }}>复制 JSON</button>
         <button onClick={() => { downloadJson(`${env.task_id}.json`, env); track("export", { via: "download", type: "image" }); }}>下载 JSON</button>
-        <button onClick={onWarehouse}>回传数仓</button>
       </div>
     </div>
   );

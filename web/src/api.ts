@@ -1,4 +1,4 @@
-import type { AudioResult, ImageResult, TaskEnvelope, VideoResult } from "./types";
+import type { JobStatus, TaskType } from "./types";
 
 async function jsonOrThrow<T>(res: Response): Promise<T> {
   const body = await res.json().catch(() => ({}));
@@ -9,44 +9,27 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
   return body as T;
 }
 
-function postFile<T>(path: string, file: File): Promise<T> {
-  const fd = new FormData();
-  fd.append("file", file);
-  return fetch(path, { method: "POST", body: fd }).then(jsonOrThrow<T>);
-}
-
 export async function getHealth(): Promise<{ ok: boolean; mode: string; missing_live_config: string[] }> {
   return jsonOrThrow(await fetch("/api/health"));
 }
 
-export function cleanImage(file: File): Promise<TaskEnvelope<ImageResult>> {
-  return postFile("/api/image/clean", file);
+/** 提交任务：立即返回 taskId，真正的处理在服务端后台任务槽里跑，跟这次请求的连接无关。
+ *  同类型已有任务在跑会被拒绝（409），message 里带了原因，直接抛出即可。 */
+export function startTask(type: TaskType, file: File, opts?: { frameIntervalMs?: number }): Promise<{ taskId: string }> {
+  const fd = new FormData();
+  fd.append("file", file);
+  if (opts?.frameIntervalMs) fd.append("frame_interval_ms", String(opts.frameIntervalMs));
+  return fetch(`/api/task/${type}/start`, { method: "POST", body: fd }).then(jsonOrThrow<{ taskId: string }>);
 }
 
-export function cleanAudio(file: File): Promise<TaskEnvelope<AudioResult>> {
-  return postFile("/api/audio/clean", file);
+/** 轻量轮询：某类型后台是否有任务在跑，给左侧菜单的小标识用 */
+export async function peekTask(type: TaskType): Promise<{ hasJob: boolean; status?: JobStatus; filename?: string }> {
+  return jsonOrThrow(await fetch(`/api/task/${type}/peek`));
 }
 
-export function cleanVideo(file: File): Promise<TaskEnvelope<VideoResult>> {
-  return postFile("/api/video/clean", file);
-}
-
-export function uploadVideo(file: File): Promise<{ id: string; filename: string }> {
-  return postFile("/api/video/upload", file);
-}
-
-export function openVideoStream(id: string, frameIntervalMs: number): WebSocket {
+/** 接上某类型的任务流：连上先回放历史消息（含「没有任务」/「已完成」这类终态），
+ *  还在跑的话继续实时收新消息——跟这条连接是不是刚建立、之前跑了多久完全无关 */
+export function openTaskStream(type: TaskType): WebSocket {
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  const qs = new URLSearchParams({ id, frame_interval_ms: String(frameIntervalMs) });
-  return new WebSocket(`${proto}://${location.host}/api/video/stream?${qs}`);
-}
-
-export async function exportToWarehouse(envelope: unknown): Promise<{ ok: boolean; path: string }> {
-  return jsonOrThrow(
-    await fetch("/api/export/warehouse", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(envelope),
-    }),
-  );
+  return new WebSocket(`${proto}://${location.host}/api/task/stream?type=${type}`);
 }

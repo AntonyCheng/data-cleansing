@@ -7,10 +7,6 @@ export function downloadJson(name: string, data: unknown) {
   URL.revokeObjectURL(a.href);
 }
 
-export async function copyJson(data: unknown) {
-  await navigator.clipboard.writeText(JSON.stringify(data, null, 2));
-}
-
 export function toSrt(lines: { start_ms: number; end_ms: number; text: string }[]): string {
   const ts = (ms: number) => {
     const h = String(Math.floor(ms / 3600000)).padStart(2, "0");

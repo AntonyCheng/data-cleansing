@@ -19,6 +19,8 @@ services:
     volumes:
       - ./exports:/app/exports # 数仓回传落盘
       - ./telemetry:/app/telemetry # 埋点落盘
+      - ./uploads:/app/uploads # 原始素材落盘，历史回看 / 任务重启续跑用
+      - ./jobs:/app/jobs # 后台任务槽心跳，容器重建后能接着跑
     healthcheck:
       test:
         - CMD

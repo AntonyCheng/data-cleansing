@@ -1,8 +1,8 @@
 import type {
   AudioResult,
   ImageResult,
+  TaskStreamMsg,
   VideoResult,
-  VideoStreamMsg,
 } from "./types.js";
 
 export const mockImageResult: ImageResult = {
@@ -71,8 +71,8 @@ export const mockVideoResult: VideoResult = {
 };
 
 /** 模拟"边播放边分析"的流式消息序列 */
-export function mockVideoStream(): VideoStreamMsg[] {
-  const msgs: VideoStreamMsg[] = [];
+export function mockVideoStream(): TaskStreamMsg[] {
+  const msgs: TaskStreamMsg[] = [];
   for (const s of mockVideoResult.subtitles) msgs.push({ kind: "subtitle", data: s });
   for (const f of mockVideoResult.frame_events) msgs.push({ kind: "frame_event", data: f });
   msgs.push({

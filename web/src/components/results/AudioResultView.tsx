@@ -1,7 +1,7 @@
 import { useRef } from "react";
 import type { AudioResult, TaskEnvelope } from "../../types";
 import { track } from "../../telemetry";
-import { copyJson, downloadJson, downloadText, toSrt } from "../export";
+import { downloadJson, downloadText, toSrt } from "../export";
 
 type Phase = "idle" | "uploading" | "cleaning" | "done" | "error";
 
@@ -15,13 +15,11 @@ export function AudioResultView({
   phase,
   previewUrl,
   onEditTldr,
-  onWarehouse,
 }: {
   env: TaskEnvelope<AudioResult> | null;
   phase: Phase;
   previewUrl: string | null;
   onEditTldr: (tldr: string) => void;
-  onWarehouse: () => void;
 }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const seek = (ms: number) => {
@@ -97,24 +95,26 @@ export function AudioResultView({
       </div>
 
       <div className="export-bar">
-        <button onClick={() => { copyJson(env); track("export", { via: "copy", type: "audio" }); }}>复制 JSON</button>
         <button onClick={() => { downloadJson(`${env.task_id}.json`, env); track("export", { via: "download", type: "audio" }); }}>下载 JSON</button>
         <button
-          onClick={() =>
+          onClick={() => {
             downloadText(
               `${env.task_id}.srt`,
               toSrt(r.transcript.map((l) => ({ start_ms: l.start_ms, end_ms: l.end_ms, text: l.text }))),
-            )
-          }
+            );
+            track("export", { via: "download", type: "audio", format: "srt" });
+          }}
         >
           下载 SRT
         </button>
         <button
-          onClick={() => downloadText(`${env.task_id}.txt`, r.transcript.map((l) => `${nameOf(l.speaker)}: ${l.text}`).join("\n"))}
+          onClick={() => {
+            downloadText(`${env.task_id}.txt`, r.transcript.map((l) => `${nameOf(l.speaker)}: ${l.text}`).join("\n"));
+            track("export", { via: "download", type: "audio", format: "txt" });
+          }}
         >
           下载全文
         </button>
-        <button onClick={() => { onWarehouse(); }}>回传数仓</button>
       </div>
     </div>
   );

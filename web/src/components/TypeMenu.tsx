@@ -9,9 +9,12 @@ const ITEMS: { key: TaskType; icon: string; name: string; sub: string }[] = [
 
 export function TypeMenu({
   active,
+  running,
   onChange,
 }: {
   active: TaskType;
+  /** 哪些类型正有任务在后台跑——不是当前查看的那个才需要提醒，当前的直接看得到实时进度 */
+  running: Set<TaskType>;
   onChange: (t: TaskType) => void;
 }) {
   const onKey = (e: KeyboardEvent, idx: number) => {
@@ -32,7 +35,10 @@ export function TypeMenu({
           onKeyDown={(e) => onKey(e, idx)}
           aria-pressed={it.key === active}
         >
-          <span className="m-icon">{it.icon}</span>
+          <span className="m-icon">
+            {it.icon}
+            {running.has(it.key) && it.key !== active && <span className="m-dot" title="后台有任务正在处理" />}
+          </span>
           <span className="m-name">{it.name}</span>
           <span className="m-sub">{it.sub}</span>
         </button>

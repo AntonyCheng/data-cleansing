@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import type { FrameEvent, Subtitle, VideoResult } from "../../types";
 import { track } from "../../telemetry";
-import { copyJson, downloadJson, downloadText, toSrt } from "../export";
+import { usePacedReveal } from "../../hooks/usePacedReveal";
+import { downloadJson, downloadText, toSrt } from "../export";
 
 type Phase = "idle" | "uploading" | "cleaning" | "done" | "error";
 
@@ -18,7 +19,6 @@ export function VideoResultView({
   summary,
   phase,
   onSeek,
-  onWarehouse,
 }: {
   previewUrl: string | null;
   videoRef: RefObject<HTMLVideoElement>;
@@ -27,7 +27,6 @@ export function VideoResultView({
   summary: VideoResult | null;
   phase: Phase;
   onSeek: (ms: number) => void;
-  onWarehouse: (envelope: unknown) => void;
 }) {
   const [currentMs, setCurrentMs] = useState(0);
   const [ended, setEnded] = useState(false);
@@ -53,8 +52,11 @@ export function VideoResultView({
 
   // 跟随播放：只显示已播到的字幕（预留 0.4s 提前量）；无视频 / 关闭跟随 / 已播完 → 全部
   const syncing = Boolean(previewUrl) && followPlayback && !ended;
-  const shownSubs = syncing ? subtitles.filter((s) => s.start_ms <= currentMs + 400) : subtitles;
-  const shownEvents = syncing ? events.filter((e) => e.t_ms <= currentMs + 400) : events;
+  const eligibleSubs = syncing ? subtitles.filter((s) => s.start_ms <= currentMs + 400) : subtitles;
+  const eligibleEvents = syncing ? events.filter((e) => e.t_ms <= currentMs + 400) : events;
+  // 后端批量分析会让多条同时「变得可见」，这里按固定节奏逐条放出，避免一坨同时冒出来
+  const shownSubs = usePacedReveal(eligibleSubs, 380, syncing);
+  const shownEvents = usePacedReveal(eligibleEvents, 450, syncing);
 
   useEffect(() => {
     if (syncing && subBoxRef.current) subBoxRef.current.scrollTop = subBoxRef.current.scrollHeight;
@@ -89,29 +91,33 @@ export function VideoResultView({
         <div className="subhead"><span className="live-dot" />实时分析中…</div>
       )}
 
-      <div className="subhead">
-        字幕
-        {previewUrl && (
-          <label className="follow-toggle">
-            <input type="checkbox" checked={followPlayback} onChange={(e) => setFollowPlayback(e.target.checked)} />
-            跟随播放
-          </label>
-        )}
-      </div>
-      <div className="transcript" ref={subBoxRef} style={{ maxHeight: 200, overflowY: "auto" }}>
-        {subtitles.length === 0 && <div className="cf">等待字幕…</div>}
-        {subtitles.length > 0 && shownSubs.length === 0 && <div className="cf">字幕将随播放逐句出现…</div>}
-        {shownSubs.map((s, i) => (
-          <div
-            key={i}
-            className={`line${syncing && i === shownSubs.length - 1 ? " line-current" : ""}`}
-            onClick={() => onSeek(s.start_ms)}
-          >
-            <div className="t">{mmss(s.start_ms)}</div>
-            <div>{s.text}</div>
+      {(subtitles.length > 0 || streaming) && (
+        <>
+          <div className="subhead">
+            字幕
+            {previewUrl && (
+              <label className="follow-toggle">
+                <input type="checkbox" checked={followPlayback} onChange={(e) => setFollowPlayback(e.target.checked)} />
+                跟随播放
+              </label>
+            )}
           </div>
-        ))}
-      </div>
+          <div className="transcript" ref={subBoxRef} style={{ maxHeight: 200, overflowY: "auto" }}>
+            {subtitles.length === 0 && streaming && <div className="cf">检测人声中…</div>}
+            {subtitles.length > 0 && shownSubs.length === 0 && <div className="cf">字幕将随播放逐句出现…</div>}
+            {shownSubs.map((s, i) => (
+              <div
+                key={i}
+                className={`line${syncing && i === shownSubs.length - 1 ? " line-current" : ""}`}
+                onClick={() => onSeek(s.start_ms)}
+              >
+                <div className="t">{mmss(s.start_ms)}</div>
+                <div>{s.text}</div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
 
       <div className="subhead">画面事件 · 抽帧理解</div>
       {events.length === 0 && <div className="cf">等待画面事件…</div>}
@@ -146,15 +152,13 @@ export function VideoResultView({
       )}
 
       <div className="export-bar">
-        <button onClick={() => { copyJson(currentEnvelope); track("export", { via: "copy", type: "video" }); }}>复制 JSON</button>
         <button onClick={() => { downloadJson("video-result.json", currentEnvelope); track("export", { via: "download", type: "video" }); }}>下载 JSON</button>
         <button
           disabled={subtitles.length === 0}
-          onClick={() => downloadText("subtitles.srt", toSrt(subtitles))}
+          onClick={() => { downloadText("subtitles.srt", toSrt(subtitles)); track("export", { via: "download", type: "video", format: "srt" }); }}
         >
           下载字幕 SRT
         </button>
-        <button disabled={!summary} onClick={() => onWarehouse(currentEnvelope)}>回传数仓</button>
       </div>
     </div>
   );
