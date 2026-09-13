@@ -1,314 +1,682 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { openTaskStream, peekTask, startTask } from "./api";
-import { track } from "./telemetry";
-import { HistoryDrawer } from "./components/HistoryDrawer";
-import { TypeMenu } from "./components/TypeMenu";
-import { UploadPanel } from "./components/UploadPanel";
-import { AudioResultView } from "./components/results/AudioResultView";
-import { ImageResultView } from "./components/results/ImageResultView";
-import { VideoResultView } from "./components/results/VideoResultView";
-import { addHistory, type HistoryItem, listHistory } from "./history";
-import type {
-  AudioResult,
-  FrameEvent,
-  ImageField,
-  ImageResult,
-  JobStatus,
-  Subtitle,
-  TaskEnvelope,
-  TaskStreamMsg,
-  TaskType,
-  VideoResult,
-} from "./types";
+import { useEffect, useState } from "react";
+import {
+  ArrowRight,
+  AudioLines,
+  BookOpen,
+  Check,
+  ChevronDown,
+  Download,
+  FileSpreadsheet,
+  Film,
+  Image as ImageIcon,
+  Network,
+  Layers3,
+  ListTodo,
+  Menu,
+  Plus,
+  ShieldCheck,
+  Sparkles,
+  X,
+} from "lucide-react";
+import { createSeed } from "./data/seed";
+import { useRemoteStore } from "./lib/useRemoteStore";
+import { clearSession, getToken, getUser, type AuthUser } from "./lib/api";
+import type { DataTask, MediaTask, Rule, SheetView, Store } from "./lib/types";
+import type { MediaKind } from "./lib/media";
+import { download } from "./lib/engine";
+import { commit } from "./lib/warehouse";
+import { Badge, Dialog, Empty, Notice, SearchBox } from "./components/UI";
+import CreateTask from "./components/CreateTask";
+import Tasks from "./pages/Tasks";
+import RuleLibrary from "./pages/RuleLibrary";
+import DataServices from "./pages/DataServices";
+import Auth from "./pages/Auth";
+import { STATUS_GUIDE } from "./lib/status";
+import { saveDataService } from "./lib/services";
+import Workbench from "./pages/Workbench";
+import MediaWorkbench from "./pages/MediaWorkbench";
 
-type ImgEnv = TaskEnvelope<ImageResult>;
-type AudEnv = TaskEnvelope<AudioResult>;
-type Phase = "idle" | "uploading" | "cleaning" | "done" | "error";
-
-const ALL_TYPES: TaskType[] = ["image", "audio", "video"];
-
-/** 从任意类型的完整 envelope 里抠出一句话摘要，给历史列表用 */
-function summaryTextOf(env: TaskEnvelope): string {
-  if (env.type === "image") return (env.result as ImageResult).summary;
-  if (env.type === "audio") return (env.result as AudioResult).summary.tldr;
-  return (env.result as VideoResult).summary;
+// P0 之前的版本把整个工作区存在浏览器 localStorage 里，键名如下；
+// 现在数据已经搬到服务端，这个键只用来检测"是不是老用户"，提供一次性导入入口。
+const LEGACY_WORKSPACE_KEY = "kdata.studio.v2";
+const navigation = [
+  { id: "tasks", name: "数据任务", icon: ListTodo },
+  { id: "rules", name: "清洗规则", icon: Layers3 },
+  { id: "services", name: "数据服务", icon: Network },
+];
+const MEDIA_KIND_ICON = { image: ImageIcon, audio: AudioLines, video: Film } as const;
+function currentRoute() {
+  const route = location.hash.slice(1) || "tasks";
+  const next =
+    route === "data" ? "services" : route === "connections" ? "tasks" : route;
+  if (next !== route) history.replaceState(null, "", `#${next}`);
+  return next;
+}
+export default function App() {
+  const [user, setUser] = useState<AuthUser | null>(() => (getToken() ? getUser() : null));
+  if (!user) return <Auth onAuthed={() => setUser(getUser())} />;
+  return <Workspace user={user} onLogout={() => { clearSession(); setUser(null); }} />;
 }
 
-export function App() {
-  const [type, setType] = useState<TaskType>("image");
-
-  const [file, setFile] = useState<File | null>(null);
-  const [phase, setPhase] = useState<Phase>("idle");
-  const [error, setError] = useState<string | null>(null);
-  const [viewingHistory, setViewingHistory] = useState(false);
-
-  const [imgEnv, setImgEnv] = useState<ImgEnv | null>(null);
-  const [audEnv, setAudEnv] = useState<AudEnv | null>(null);
-  // 当前接上的任务（不管是历史回看还是后台任务槽）对应的原始素材地址，与本地刚选的 objectUrl 互斥
-  const [attachedMediaUrl, setAttachedMediaUrl] = useState<string | null>(null);
-
-  // 视频"边播边析"实时状态（回放历史消息 / 实时推送用的是同一套 apply 逻辑）
-  const [subs, setSubs] = useState<Subtitle[]>([]);
-  const [events, setEvents] = useState<FrameEvent[]>([]);
-  const [vSummary, setVSummary] = useState<VideoResult | null>(null);
-  const [frameIntervalMs, setFrameIntervalMs] = useState(3000);
-  const wsRef = useRef<WebSocket | null>(null);
-  const videoElRef = useRef<HTMLVideoElement>(null);
-  const lastFilename = useRef<string>("");
-  // 当前任务流里最新一条 result 消息（完整 envelope），done 到达时拿它存历史
-  const pendingEnvelope = useRef<TaskEnvelope | null>(null);
-
-  // 哪些类型后台还有任务在跑（不含当前正在看的那个），驱动左侧菜单的小红点
-  const [runningTypes, setRunningTypes] = useState<Set<TaskType>>(new Set());
-
-  // 会话历史
-  const [history, setHistory] = useState<HistoryItem[]>([]);
-  const [historyOpen, setHistoryOpen] = useState(false);
-
-  const objectUrl = useMemo(() => (file ? URL.createObjectURL(file) : null), [file]);
-  useEffect(() => () => { if (objectUrl) URL.revokeObjectURL(objectUrl); }, [objectUrl]);
-  // 当前上传的临时预览优先；否则用任务槽/历史记录里落盘的原始素材
-  const previewUrl = objectUrl ?? attachedMediaUrl;
-
-  function saveToHistory(env: TaskEnvelope, filename: string, summary: string) {
-    lastFilename.current = filename;
-    setHistory(addHistory(env, filename, summary));
-  }
-
-  /** 清空当前展示态（不影响服务端任务槽本身——它该怎么跑还怎么跑） */
-  function clearView() {
-    wsRef.current?.close();
-    wsRef.current = null;
-    pendingEnvelope.current = null;
-    setImgEnv(null);
-    setAudEnv(null);
-    setAttachedMediaUrl(null);
-    setSubs([]);
-    setEvents([]);
-    setVSummary(null);
-    setError(null);
-    setViewingHistory(false);
-  }
-
-  /** 接上某类型的任务流：先回放它已有的进度，任务还在跑的话继续实时收新消息。
-   *  首次挂载、切换类型、刚提交完任务，都走这一条路——效果上就是"随时查看当前进度"。 */
-  function attachToType(t: TaskType) {
-    clearView();
-    setPhase("idle");
-    const ws = openTaskStream(t);
-    wsRef.current = ws;
-    ws.onmessage = (ev) => {
-      const msg = JSON.parse(ev.data as string) as TaskStreamMsg;
-      if (msg.kind === "no_job") {
-        setPhase("idle");
-      } else if (msg.kind === "status") {
-        lastFilename.current = msg.data.filename;
-        if (msg.data.media_url) setAttachedMediaUrl(msg.data.media_url);
-        setPhase(msg.data.status === "running" ? "cleaning" : msg.data.status === "error" ? "error" : "done");
-      } else if (msg.kind === "result") {
-        pendingEnvelope.current = msg.data;
-        setAttachedMediaUrl(msg.data.source.media_url ?? null);
-        if (t === "image") setImgEnv(msg.data as ImgEnv);
-        else if (t === "audio") setAudEnv(msg.data as AudEnv);
-      } else if (msg.kind === "subtitle") {
-        setSubs((s) => [...s, msg.data]);
-      } else if (msg.kind === "frame_event") {
-        setEvents((e) => [...e, msg.data]);
-      } else if (msg.kind === "summary") {
-        setVSummary((v) => ({ subtitles: v?.subtitles ?? [], frame_events: v?.frame_events ?? [], ...msg.data }));
-      } else if (msg.kind === "error") {
-        setError(msg.data.message);
-        setPhase("error");
-      } else if (msg.kind === "done") {
-        setPhase("done");
-        track("task_success", { type: t });
-        if (pendingEnvelope.current) {
-          saveToHistory(pendingEnvelope.current, pendingEnvelope.current.source.filename, summaryTextOf(pendingEnvelope.current));
-        }
-      }
-      // kind === "cost"：界面不展示调用成本，忽略
+function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void }) {
+  const [store, setStore, storageError] = useRemoteStore<Store>(createSeed);
+  const [route, setRoute] = useState(currentRoute);
+  const [navOpen, setNavOpen] = useState(false);
+  const [create, setCreate] = useState<{
+    type?: string;
+  } | null>(null);
+  const [modal, setModal] = useState<"help" | "search" | "workspace" | null>(
+    null,
+  );
+  const [search, setSearch] = useState("");
+  const [toast, setToast] = useState("");
+  useEffect(() => {
+    const listener = () => {
+      setRoute(currentRoute());
+      window.scrollTo(0, 0);
+      setNavOpen(false);
     };
-    ws.onerror = () => setError("与服务端的实时连接异常");
-    ws.onclose = () => { wsRef.current = null; };
-  }
-
-  useEffect(() => {
-    setHistory(listHistory());
-    attachToType(type); // 页面一打开就接上默认类型，重开浏览器也能看到上次留下的进度/结果
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    window.addEventListener("hashchange", listener);
+    return () => window.removeEventListener("hashchange", listener);
   }, []);
-
-  // 左侧菜单小红点：轻量轮询三个类型的后台状态，不影响当前正在看的那个类型
   useEffect(() => {
-    let cancelled = false;
-    async function poll() {
-      const results = await Promise.all(
-        ALL_TYPES.map((t) => peekTask(t).catch((): { hasJob: boolean; status?: JobStatus } => ({ hasJob: false }))),
-      );
-      if (cancelled) return;
-      const next = new Set<TaskType>();
-      ALL_TYPES.forEach((t, i) => { if (results[i].status === "running") next.add(t); });
-      setRunningTypes(next);
-    }
-    void poll();
-    const timer = setInterval(poll, 4000);
-    return () => { cancelled = true; clearInterval(timer); };
+    if (!toast) return;
+    const id = setTimeout(() => setToast(""), 4200);
+    return () => clearTimeout(id);
+  }, [toast]);
+  useEffect(() => {
+    const listener = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        setModal("search");
+      }
+    };
+    window.addEventListener("keydown", listener);
+    return () => window.removeEventListener("keydown", listener);
   }, []);
-
-  function switchType(t: TaskType) {
-    if (t === type) return;
-    setType(t);
-    setFile(null);
-    attachToType(t);
+  const mediaTasks = store.mediaTasks ?? [];
+  const parts = route.split("/"),
+    selected =
+      parts[0] === "workbench"
+        ? store.tasks.find((t) => t.id === parts[1])
+        : undefined,
+    selectedMedia =
+      parts[0] === "media"
+        ? mediaTasks.find((t) => t.id === parts[1])
+        : undefined;
+  const section = selected || selectedMedia
+    ? "tasks"
+    : navigation.some((n) => n.id === parts[0])
+      ? parts[0]
+      : "tasks";
+  const go = (path: string) => {
+    location.hash = path;
+    setNavOpen(false);
+  };
+  const open = (id: string, view: SheetView = "raw") =>
+    go(`workbench/${id}/${view}`);
+  const openMedia = (id: string) => go(`media/${id}`);
+  function updateTask(task: DataTask) {
+    setStore((s) => ({
+      ...s,
+      tasks: s.tasks.map((t) => (t.id === task.id ? task : t)),
+    }));
   }
-
-  function pickFile(f: File) {
-    clearView();
-    setPhase("idle");
-    setFile(f);
+  function updateMediaTask(task: MediaTask) {
+    setStore((s) => ({
+      ...s,
+      mediaTasks: (s.mediaTasks ?? []).map((t) => (t.id === task.id ? task : t)),
+    }));
   }
-
-  async function runClean() {
-    if (!file) return;
-    setError(null);
-    setPhase("uploading");
-    track("task_start", { type, size: file.size });
-    try {
-      await startTask(type, file, type === "video" ? { frameIntervalMs } : undefined);
-      attachToType(type); // 提交成功后立刻接上，从头看着它跑
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setPhase("error");
-    }
+  function createMediaTask(kind: MediaKind, taskId: string, name: string, filename: string) {
+    const record: MediaTask = {
+      id: taskId,
+      kind,
+      name,
+      filename,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+    };
+    setStore((s) => ({ ...s, mediaTasks: [record, ...(s.mediaTasks ?? [])] }));
+    setCreate(null);
+    openMedia(record.id);
+    setToast("已提交，正在后台处理");
   }
-
-  function seekVideo(ms: number) {
-    if (videoElRef.current) videoElRef.current.currentTime = ms / 1000;
+  function saveRules(
+    rules: Rule[],
+    name: string,
+    method: "AI 生成" | "手工创建",
+  ) {
+    setStore((s) => ({
+      ...s,
+      savedRules: [
+        ...s.savedRules,
+        {
+          id: crypto.randomUUID(),
+          name,
+          description: rules.map((r) => r.name).join(" → "),
+          scope: "我的清洗规则",
+          rules: structuredClone(rules),
+          fieldTypes: [
+            ...new Set(
+              selected?.fields
+                .filter((f) =>
+                  rules.some(
+                    (r) =>
+                      r.field === "*" ||
+                      r.field === f.key ||
+                      r.fields.includes(f.key),
+                  ),
+                )
+                .map((f) => f.type) || ["文本"],
+            ),
+          ],
+          createdBy: user.displayName,
+          method,
+          createdAt: new Date().toISOString(),
+          uses: 0,
+          version: 1,
+        },
+      ],
+    }));
   }
-
-  // ---- 结果人工修正（同步回历史）----
-  function editImageFields(fields: ImageField[]) {
-    setImgEnv((e) => {
-      if (!e) return e;
-      const next = { ...e, human_edited: true, result: { ...e.result, fields } };
-      if (!viewingHistory) setHistory(addHistory(next, lastFilename.current, next.result.summary));
-      track("field_edit", { type: "image" });
-      return next;
-    });
-  }
-  function editAudioSummary(tldr: string) {
-    setAudEnv((e) => {
-      if (!e) return e;
-      const next = { ...e, human_edited: true, result: { ...e.result, summary: { ...e.result.summary, tldr } } };
-      if (!viewingHistory) setHistory(addHistory(next, lastFilename.current, tldr));
-      return next;
-    });
-  }
-
-  // ---- 历史回看：纯本地静态快照，与任务槽无关，先断开当前任务流的连接 ----
-  function openHistoryItem(item: HistoryItem) {
-    setHistoryOpen(false);
-    clearView();
-    setFile(null);
-    setViewingHistory(true);
-    setType(item.type);
-    setPhase("done");
-    setAttachedMediaUrl(item.envelope.source.media_url ?? null);
-    if (item.type === "image") setImgEnv(item.envelope as ImgEnv);
-    else if (item.type === "audio") setAudEnv(item.envelope as AudEnv);
-    else {
-      const r = item.envelope.result as VideoResult;
-      setSubs(r.subtitles ?? []);
-      setEvents(r.frame_events ?? []);
-      setVSummary(r);
-    }
-  }
-
   return (
-    <div className="shell">
-      <header className="topbar">
-        <span className="brand">
-          <span className="brand-tile" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z" />
-              <path d="m6.08 9.16-3.5 1.6a1 1 0 0 0 0 1.81l8.58 3.91a2 2 0 0 0 1.65 0l8.58-3.9a1 1 0 0 0 0-1.81l-3.5-1.6" />
-              <path d="m6.08 14.16-3.5 1.6a1 1 0 0 0 0 1.81l8.58 3.91a2 2 0 0 0 1.65 0l8.58-3.9a1 1 0 0 0 0-1.83l-3.5-1.59" />
+    <div className={`app ${selected ? "is-workbench" : ""}`}>
+      <a
+        className="skip-link"
+        href="#main-content"
+        onClick={(e) => {
+          e.preventDefault();
+          document.getElementById("main-content")?.focus();
+        }}
+      >
+        跳到主要内容
+      </a>
+      {navOpen && (
+        <button
+          className="nav-overlay"
+          aria-label="关闭导航"
+          onClick={() => setNavOpen(false)}
+        />
+      )}
+      <aside className={`sidebar ${navOpen ? "open" : ""}`}>
+        <a className="brand" href="#tasks">
+          <span className="brand-mark">
+            <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
+              <path
+                d="M8 7v18M24 7L13 16l11 9M13 11v10"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
             </svg>
           </span>
-          <span className="brand-text"><b>多模态</b>数据清洗台</span>
-        </span>
-        <div className="spacer" />
+          <span>
+            KData<small>STUDIO</small>
+          </span>
+        </a>
         <button
-          className="chip chip-btn"
-          onClick={() => { setHistoryOpen(true); track("history_open", { count: history.length }); }}
+          className="button primary sidebar-create"
+          onClick={() => setCreate({})}
         >
-          历史 {history.length > 0 ? `· ${history.length}` : ""}
+          <Plus size={17} />
+          创建数据任务
         </button>
-      </header>
-
-      <div className="body">
-        <TypeMenu active={type} running={runningTypes} onChange={switchType} />
-
-        <div className="work">
-          <section className="panel upload">
-            <h2>上传 · 确认清洗</h2>
-            <UploadPanel
-              type={type}
-              file={file}
-              phase={phase}
-              error={error}
-              frameIntervalMs={frameIntervalMs}
-              onFrameIntervalChange={(ms) => { setFrameIntervalMs(ms); track("frame_interval_change", { ms }); }}
-              onPick={pickFile}
-              onClear={() => { setFile(null); setPhase("idle"); }}
-              onClean={runClean}
-            />
-          </section>
-
-          <section className="panel result">
-            <h2>
-              清洗结果
-              {viewingHistory && <span className="badge-view">历史回看</span>}
-            </h2>
-            {type === "image" && (
-              <ImageResultView
-                env={imgEnv}
-                phase={phase}
-                previewUrl={previewUrl}
-                onEditFields={editImageFields}
-              />
-            )}
-            {type === "audio" && (
-              <AudioResultView
-                env={audEnv}
-                phase={phase}
-                previewUrl={previewUrl}
-                onEditTldr={editAudioSummary}
-              />
-            )}
-            {type === "video" && (
-              <VideoResultView
-                previewUrl={previewUrl}
-                videoRef={videoElRef}
-                subtitles={subs}
-                events={events}
-                summary={vSummary}
-                phase={phase}
-                onSeek={seekVideo}
-              />
-            )}
-          </section>
+        <span className="nav-section-label">工作空间</span>
+        <nav aria-label="主导航">
+          {navigation.map((n) => (
+            <a
+              key={n.id}
+              href={"#" + n.id}
+              className={section === n.id ? "active" : ""}
+              onClick={() => setNavOpen(false)}
+              aria-current={section === n.id ? "page" : undefined}
+            >
+              <n.icon size={19} strokeWidth={1.7} />
+              <span>{n.name}</span>
+              {n.id === "tasks" && <b>{store.tasks.length + mediaTasks.length}</b>}
+            </a>
+          ))}
+        </nav>
+        <div className="recent-tasks-nav">
+          <span className="nav-section-label">最近任务</span>
+          {[
+            ...store.tasks.map((t) => ({ id: t.id, name: t.name, updatedAt: t.updatedAt, media: false as const })),
+            ...mediaTasks.map((t) => ({ id: t.id, name: t.name, updatedAt: t.updatedAt, media: true as const, kind: t.kind })),
+          ]
+            .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+            .slice(0, 3)
+            .map((t) => {
+              const isSelected = t.media ? selectedMedia?.id === t.id : selected?.id === t.id;
+              const Icon = t.media ? MEDIA_KIND_ICON[t.kind] : FileSpreadsheet;
+              return (
+                <button
+                  key={(t.media ? "media-" : "data-") + t.id}
+                  className={isSelected ? "selected" : ""}
+                  onClick={() => (t.media ? openMedia(t.id) : open(t.id))}
+                >
+                  <Icon size={14} />
+                  <span>{t.name}</span>
+                  {isSelected && <i />}
+                </button>
+              );
+            })}
         </div>
+        <div className="sidebar-bottom">
+          <div className="local-data-note">
+            <span>
+              <ShieldCheck size={18} />
+            </span>
+            <div>
+              <strong>安心整理每一份数据</strong>
+              <p>原始数据保留，变更可追溯</p>
+            </div>
+          </div>
+          <button className="sidebar-help" onClick={() => setModal("help")}>
+            <BookOpen size={17} />
+            使用指南
+            <ArrowRight size={13} />
+          </button>
+          <div className="user-card">
+            <span>{user.displayName.slice(0, 1)}</span>
+            <div>
+              <strong>{user.displayName}</strong>
+              <small>{user.email}</small>
+            </div>
+            <button
+              className="icon-button"
+              aria-label="工作区信息"
+              onClick={() => setModal("workspace")}
+            >
+              <ChevronDown size={15} />
+            </button>
+          </div>
+        </div>
+      </aside>
+      <div className="main-shell">
+        <main id="main-content" tabIndex={-1}>
+          {!selected && (
+            <button
+              className="icon-button page-nav-toggle"
+              aria-label="打开导航"
+              aria-expanded={navOpen}
+              onClick={() => setNavOpen(true)}
+            >
+              <Menu size={20} />
+            </button>
+          )}
+          {storageError && (
+            <div className="storage-error">
+              <Notice warning>
+                与服务端同步失败，更改暂时只保存在当前页面，请检查网络后刷新重试；建议先导出工作区备份。
+              </Notice>
+            </div>
+          )}
+          {selected ? (
+            <Workbench
+              key={selected.id + "-" + (parts[2] || "raw")}
+              task={selected}
+              store={store}
+              onUpdate={updateTask}
+              onImport={(d) => {
+                const next = commit(store, selected, d);
+                setStore(next);
+              }}
+              onSaveRule={saveRules}
+              onTemplate={(rules, name) =>
+                setStore((s) => ({
+                  ...s,
+                  templates: [
+                    ...s.templates,
+                    {
+                      id: crypto.randomUUID(),
+                      name,
+                      description: rules
+                        .filter((r) => r.enabled)
+                        .map((r) => r.name)
+                        .join(" → "),
+                      rules: structuredClone(rules.filter((r) => r.enabled)),
+                      createdAt: new Date().toISOString(),
+                      uses: 0,
+                    },
+                  ],
+                }))
+              }
+              onBack={() => go("tasks")}
+              onOpenNav={() => setNavOpen(true)}
+              notify={setToast}
+              initialView={
+                (["raw", "cleaned", "exceptions", "history"].includes(parts[2])
+                  ? parts[2]
+                  : "raw") as SheetView
+              }
+            />
+          ) : selectedMedia ? (
+            <MediaWorkbench
+              key={selectedMedia.id}
+              task={selectedMedia}
+              onUpdate={updateMediaTask}
+              onBack={() => go("tasks")}
+              onOpenNav={() => setNavOpen(true)}
+            />
+          ) : section === "tasks" ? (
+            <Tasks
+              tasks={store.tasks}
+              mediaTasks={mediaTasks}
+              onCreate={(type) => setCreate({ type })}
+              onOpen={open}
+              onOpenMedia={openMedia}
+            />
+          ) : section === "rules" ? (
+            <RuleLibrary
+              store={store}
+              onApply={(task, rules, id, template) => {
+                setStore((s) => ({
+                  ...s,
+                  tasks: s.tasks.map((t) =>
+                    t.id === task.id
+                      ? {
+                          ...t,
+                          plan: template ? rules : [...t.plan, ...rules],
+                          updatedAt: new Date().toISOString(),
+                        }
+                      : t,
+                  ),
+                  savedRules: s.savedRules.map((r) =>
+                    r.id === id
+                      ? {
+                          ...r,
+                          uses: r.uses + 1,
+                          lastUsed: new Date().toISOString(),
+                        }
+                      : r,
+                  ),
+                  templates: s.templates.map((t) =>
+                    t.id === id ? { ...t, uses: t.uses + 1 } : t,
+                  ),
+                }));
+                open(task.id);
+                setToast(
+                  template
+                    ? "模板已加载，请复核规则后执行"
+                    : "规则已加入当前任务",
+                );
+              }}
+              onSave={(rule) =>
+                setStore((s) => ({ ...s, savedRules: [...s.savedRules, rule] }))
+              }
+              onShare={(id) =>
+                setStore((s) => {
+                  const rule = s.savedRules.find((r) => r.id === id)!;
+                  return {
+                    ...s,
+                    savedRules: [
+                      ...s.savedRules,
+                      {
+                        ...structuredClone(rule),
+                        id: crypto.randomUUID(),
+                        scope: "企业规则",
+                        createdAt: new Date().toISOString(),
+                        uses: 0,
+                        lastUsed: undefined,
+                      },
+                    ],
+                  };
+                })
+              }
+              notify={setToast}
+            />
+          ) : (
+            <DataServices
+              store={store}
+              onOpen={open}
+              onTasks={() => go("tasks")}
+              onSave={(config) => {
+                const next = saveDataService(store, config);
+                setStore(next);
+                setToast("服务配置已保存，待部署后可对外调用");
+              }}
+            />
+          )}
+        </main>
       </div>
-
-      <HistoryDrawer
-        open={historyOpen}
-        items={history}
-        onClose={() => setHistoryOpen(false)}
-        onOpenItem={openHistoryItem}
-        onCleared={() => setHistory([])}
-        onItemDeleted={setHistory}
-      />
+      {create && (
+        <Dialog title="创建数据任务" onClose={() => setCreate(null)} wide>
+          <CreateTask
+            initialType={create.type}
+            onClose={() => setCreate(null)}
+            onCreateMedia={createMediaTask}
+            onCreate={(task) => {
+              setStore((s) => ({
+                ...s,
+                tasks: [task, ...s.tasks],
+              }));
+              setCreate(null);
+              open(task.id);
+              setToast("数据解析完成，已进入工作台");
+            }}
+          />
+        </Dialog>
+      )}
+      {modal && (
+        <Dialog
+          title={
+            modal === "help"
+              ? "从原始数据到数据服务"
+              : modal === "workspace"
+                ? "默认工作空间"
+                : "搜索工作区"
+          }
+          onClose={() => setModal(null)}
+          wide={modal === "help"}
+        >
+          {modal === "help" ? (
+            <>
+              <div className="guide-intro">
+                <span className="ai-icon">
+                  <Sparkles size={26} />
+                </span>
+                <div>
+                  <h3>数据整理，在一个工作台完成</h3>
+                  <p>你负责确认，AI 副驾驶帮你选择和解释处理方式。</p>
+                </div>
+              </div>
+              <div className="guide-steps">
+                {[
+                  [
+                    "接入数据",
+                    "在创建任务中上传 CSV / XLSX，或填写数据库、API 和 URL 来源后体验样例。",
+                  ],
+                  [
+                    "查看数据与质量",
+                    "在表格中搜索筛选、点击字段查看统计，在副驾驶定位具体问题。",
+                  ],
+                  [
+                    "确认清洗方案",
+                    "选择系统规则、一键推荐或自然语言规则，检查影响再开始执行。",
+                  ],
+                  [
+                    "使用清洗成果",
+                    "检查清洗报告并确认入库；在数据服务中预览、导出清洗结果，选择输出字段并保存服务配置。",
+                  ],
+                ].map(([title, desc], i) => (
+                  <div key={title}>
+                    <b>{i + 1}</b>
+                    <span>
+                      <h3>{title}</h3>
+                      <p>{desc}</p>
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <section className="status-guide" aria-label="状态说明">
+                <h3>状态说明</h3>
+                {STATUS_GUIDE.map((group) => (
+                  <section key={group.title}>
+                    <h4>{group.title}</h4>
+                    <p>{group.description}</p>
+                    <dl>
+                      {group.items.map((status) => (
+                        <div key={status.text}>
+                          <dt>
+                            <Badge tone={status.tone}>{status.text}</Badge>
+                          </dt>
+                          <dd>{status.description}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </section>
+                ))}
+                <p>
+                  只看最新一次清洗结果；若重新清洗后出现校验异常，该任务会从数据服务中移除，不回退展示旧结果。原始数据、异常数据和历史记录仍保留在任务工作台中。
+                </p>
+              </section>
+              <Notice>
+                实际在本地执行：文件解析、清洗、异常分流、导出及演示入库。AI
+                语义使用有限规则匹配，远程采集、数据库写入和对外数据接口尚未连接后端。
+              </Notice>
+              <div className="form-footer">
+                <button
+                  className="button primary"
+                  onClick={() => {
+                    setModal(null);
+                    setCreate({});
+                  }}
+                >
+                  创建数据任务
+                  <ArrowRight size={15} />
+                </button>
+              </div>
+            </>
+          ) : modal === "workspace" ? (
+            <>
+              <dl className="definition-list">
+                <dt>工作区名称</dt>
+                <dd>默认工作空间</dd>
+                <dt>当前用户</dt>
+                <dd>
+                  {user.displayName} · {user.email}
+                </dd>
+                <dt>任务与规则</dt>
+                <dd>
+                  {store.tasks.length} 个任务 · {store.savedRules.length}{" "}
+                  条自建及企业规则
+                </dd>
+                <dt>已入库数据表</dt>
+                <dd>{store.warehouses.length} 张本地演示表</dd>
+                <dt>数据保存位置</dt>
+                <dd>服务端账号（登录后跨设备同步）</dd>
+              </dl>
+              <Notice>
+                改动会在你停手约 800ms 后自动同步到服务端；此处导出的是当前工作区快照。
+              </Notice>
+              {typeof localStorage !== "undefined" && localStorage.getItem(LEGACY_WORKSPACE_KEY) && (
+                <Notice warning>
+                  检测到浏览器里还留着旧版（登录前）的本地工作区数据。
+                  <div className="form-footer">
+                    <button
+                      className="button"
+                      onClick={() => {
+                        try {
+                          const raw = localStorage.getItem(LEGACY_WORKSPACE_KEY);
+                          if (!raw) return;
+                          setStore(JSON.parse(raw) as Store);
+                          localStorage.removeItem(LEGACY_WORKSPACE_KEY);
+                          setToast("已导入本地历史工作区");
+                        } catch {
+                          setToast("导入失败，本地数据格式不正确");
+                        }
+                      }}
+                    >
+                      导入到当前账号
+                    </button>
+                  </div>
+                </Notice>
+              )}
+              <div className="form-footer">
+                <button
+                  className="button"
+                  onClick={() => {
+                    download(
+                      "kdata-studio-workspace.json",
+                      JSON.stringify(store, null, 2),
+                      "application/json",
+                    );
+                    setToast("工作区快照已导出");
+                  }}
+                >
+                  <Download size={15} />
+                  导出工作区
+                </button>
+                <button className="button" onClick={onLogout}>
+                  退出登录
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <SearchBox
+                value={search}
+                onChange={setSearch}
+                placeholder="搜索任务或页面…"
+              />
+              <div className="task-picker">
+                {navigation
+                  .filter((n) => n.name.includes(search))
+                  .map((n) => (
+                    <button
+                      key={n.id}
+                      onClick={() => {
+                        go(n.id);
+                        setModal(null);
+                      }}
+                    >
+                      <n.icon size={18} />
+                      <strong>{n.name}</strong>
+                      <ArrowRight size={15} />
+                    </button>
+                  ))}
+                {store.tasks
+                  .filter((t) => t.name.includes(search))
+                  .map((t) => (
+                    <button
+                      key={t.id}
+                      onClick={() => {
+                        open(t.id);
+                        setModal(null);
+                      }}
+                    >
+                      <FileSpreadsheet size={18} />
+                      <span>
+                        <strong>{t.name}</strong>
+                        <small>{t.source}</small>
+                      </span>
+                      <ArrowRight size={15} />
+                    </button>
+                  ))}
+                {!navigation.some((n) => n.name.includes(search)) &&
+                  !store.tasks.some((t) => t.name.includes(search)) && (
+                    <Empty
+                      title="没有匹配结果"
+                      description="试试其他任务名称。"
+                    />
+                  )}
+              </div>
+            </>
+          )}
+        </Dialog>
+      )}
+      {toast && (
+        <div className="toast" role="status">
+          <Check size={17} />
+          <span>{toast}</span>
+          <button aria-label="关闭提示" onClick={() => setToast("")}>
+            <X size={14} />
+          </button>
+        </div>
+      )}
     </div>
   );
 }

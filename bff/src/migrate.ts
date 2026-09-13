@@ -1,0 +1,65 @@
+// P0 地基迁移：只有两张表（users、workspaces），刻意不拆分 DataTask/Run 等子结构——
+// 见 P0 方案：workspace.data 就是前端 Store 的整坨 JSON，直接照搬现在 localStorage 的存法。
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { sql } from "kysely";
+import { Migrator, type Migration, type MigrationProvider } from "kysely/migration";
+import { db, pool } from "./db.js";
+
+const migrations: Record<string, Migration> = {
+  "001_users": {
+    async up(db) {
+      await db.schema
+        .createTable("users")
+        .addColumn("id", "uuid", (col) => col.primaryKey())
+        .addColumn("email", "text", (col) => col.notNull().unique())
+        .addColumn("password_hash", "text", (col) => col.notNull())
+        .addColumn("display_name", "text", (col) => col.notNull())
+        .addColumn("created_at", "timestamptz", (col) => col.notNull().defaultTo(sql`now()`))
+        .execute();
+    },
+    async down(db) {
+      await db.schema.dropTable("users").execute();
+    },
+  },
+  "002_workspaces": {
+    async up(db) {
+      await db.schema
+        .createTable("workspaces")
+        .addColumn("user_id", "uuid", (col) => col.primaryKey().references("users.id").onDelete("cascade"))
+        .addColumn("data", "jsonb")
+        .addColumn("updated_at", "timestamptz", (col) => col.notNull().defaultTo(sql`now()`))
+        .execute();
+    },
+    async down(db) {
+      await db.schema.dropTable("workspaces").execute();
+    },
+  },
+};
+
+const provider: MigrationProvider = {
+  async getMigrations() {
+    return migrations;
+  },
+};
+
+/** 跑到最新版本；幂等，已执行过的 migration 会被跳过。调用方负责自己的 pool 生命周期。 */
+export async function migrateToLatest(): Promise<void> {
+  const migrator = new Migrator({ db, provider });
+  const { error, results } = await migrator.migrateToLatest();
+  for (const r of results ?? []) {
+    console.log(`[migrate] ${r.status}: ${r.migrationName}`);
+  }
+  if (error) throw error;
+}
+
+// 仅当直接执行本文件时（`npm run migrate`）才跑一次并退出；被 index.ts import 时不会触发。
+const isMain = process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+if (isMain) {
+  migrateToLatest()
+    .catch((e: unknown) => {
+      console.error("[migrate] 失败:", e);
+      process.exitCode = 1;
+    })
+    .finally(() => pool.end());
+}

@@ -1,6 +1,25 @@
 name: data-cleansing
 
 services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: data_cleansing
+    ports:
+      - "5432:5432" # 本地不跑 bff 容器、直接 npm run dev 调试时需要连到宿主机端口，可删
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    mem_limit: 512m
+    restart: unless-stopped
+
   bff:
     build:
       context: .
@@ -14,6 +33,10 @@ services:
       # 浏览器实际访问的地址（nginx 端口），用于 CORS
       WEB_ORIGIN: "http://localhost:8080"
       FFMPEG_PATH: /usr/bin/ffmpeg
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/data_cleansing
+    depends_on:
+      db:
+        condition: service_healthy
     ports:
       - "8787:8787" # 直连调试用，可删
     volumes:
@@ -36,8 +59,8 @@ services:
 
   web:
     build:
-      context: .
-      dockerfile: web/Dockerfile
+      context: ./web
+      dockerfile: Dockerfile
     image: data-cleansing-web
     ports:
       - "8080:80" # 打开 http://localhost:8080

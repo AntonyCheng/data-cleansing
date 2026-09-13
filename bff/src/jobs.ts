@@ -1,5 +1,7 @@
-// 后台任务槽：每种类型（image/audio/video）最多一个任务在跑，与浏览器连接的生命周期完全解耦——
+// 后台任务槽：每个用户的每种类型（image/audio/video）最多一个任务在跑，与浏览器连接的生命周期完全解耦——
 // 关浏览器、切类型都不会打断它；进度落盘心跳，BFF 进程重启/容器重建后能重新跑起来，不会真把进行中的任务弄丢。
+// P0 起任务槽按用户隔离（key 从单纯的 type 换成 `${userId}:${type}`）：不同用户互不阻塞，
+// 同一用户同类型仍然只能跑一个——这条限制本来就是为了控制火山引擎调用成本，多用户后更该保留。
 
 import { randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -12,6 +14,10 @@ import type { JobStatus, TaskEnvelope, TaskStreamMsg, TaskType, VideoResult } fr
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const JOBS_DIR = join(ROOT, "jobs");
 
+function jobKey(userId: string, type: TaskType): string {
+  return `${userId}:${type}`;
+}
+
 const TYPE_LABEL: Record<TaskType, string> = { image: "图片", audio: "音频", video: "视频" };
 const TYPE_APIS: Record<TaskType, string[]> = {
   image: ["ark.doubao-vision"],
@@ -21,6 +27,7 @@ const TYPE_APIS: Record<TaskType, string[]> = {
 
 interface JobSnapshot {
   id: string;
+  userId: string;
   type: TaskType;
   status: JobStatus;
   filename: string;
@@ -37,39 +44,41 @@ interface Job extends JobSnapshot {
   listeners: Set<(msg: TaskStreamMsg) => void>;
 }
 
-const jobs = new Map<TaskType, Job>();
+const jobs = new Map<string, Job>();
 
 export class JobBusyError extends Error {
   code = "BUSY";
   status = 409;
 }
 
-function snapshotPath(type: TaskType): string {
-  return join(JOBS_DIR, `${type}.json`);
+function snapshotPath(userId: string, type: TaskType): string {
+  return join(JOBS_DIR, userId, `${type}.json`);
 }
 
 async function persistNow(job: Job): Promise<void> {
-  await mkdir(JOBS_DIR, { recursive: true });
+  const dir = join(JOBS_DIR, job.userId);
+  await mkdir(dir, { recursive: true });
   const { listeners: _listeners, ...snapshot } = job;
-  const target = snapshotPath(job.type);
+  const target = snapshotPath(job.userId, job.type);
   const tmp = `${target}.tmp`;
   await writeFile(tmp, JSON.stringify(snapshot));
   await rename(tmp, target); // 先写临时文件再原子改名，进程中途挂掉不会留半截 JSON
 }
 
 // appendMsg 在一个任务处理期间会被密集调用（视频一次批处理就是好几条），每条都触发落盘。
-// 必须按类型串行化，否则多个并发的 writeFile+rename 抢同一个 .tmp 文件，输的那个 rename 时
+// 必须按 用户+类型 串行化，否则多个并发的 writeFile+rename 抢同一个 .tmp 文件，输的那个 rename 时
 // 源文件已经被赢的那个移走，报 ENOENT——这是未捕获的 rejection，会直接崩掉整个进程。
-const persistChains = new Map<TaskType, Promise<void>>();
+const persistChains = new Map<string, Promise<void>>();
 
 function persist(job: Job): void {
-  const prev = persistChains.get(job.type) ?? Promise.resolve();
+  const key = jobKey(job.userId, job.type);
+  const prev = persistChains.get(key) ?? Promise.resolve();
   const next = prev
     .then(() => persistNow(job))
     .catch((e: unknown) => {
-      console.warn(`[jobs] 落盘失败 ${job.type}:`, e instanceof Error ? e.message : e);
+      console.warn(`[jobs] 落盘失败 ${key}:`, e instanceof Error ? e.message : e);
     });
-  persistChains.set(job.type, next);
+  persistChains.set(key, next);
 }
 
 function envelope<R>(
@@ -164,20 +173,23 @@ function startExecution(job: Job, file: UploadedFile): void {
     });
 }
 
-/** 新建任务：同类型已有任务在跑则拒绝——同类型仅单并发，跨类型互不影响 */
+/** 新建任务：同一用户同类型已有任务在跑则拒绝——同类型仅单并发，跨用户/跨类型互不影响 */
 export function createJob(
+  userId: string,
   type: TaskType,
   file: UploadedFile,
   mediaUrl: string,
   mediaPath: string,
   frameIntervalMs?: number,
 ): Job {
-  const existing = jobs.get(type);
+  const key = jobKey(userId, type);
+  const existing = jobs.get(key);
   if (existing && existing.status === "running") {
     throw new JobBusyError(`「${TYPE_LABEL[type]}」有任务正在处理中，请稍候或先切换查看进度`);
   }
   const job: Job = {
     id: randomUUID(),
+    userId,
     type,
     status: "running",
     filename: file.originalname,
@@ -189,18 +201,19 @@ export function createJob(
     log: [],
     listeners: new Set(),
   };
-  jobs.set(type, job);
+  jobs.set(key, job);
   persist(job);
   startExecution(job, file);
   return job;
 }
 
-/** 挂到某类型的任务流：先回放已有的历史消息，任务还在跑的话继续实时转发新消息 */
+/** 挂到某用户某类型的任务流：先回放已有的历史消息，任务还在跑的话继续实时转发新消息 */
 export function attach(
+  userId: string,
   type: TaskType,
   onMsg: (msg: TaskStreamMsg) => void,
 ): { replay: TaskStreamMsg[]; status?: JobStatus; filename?: string; mediaUrl?: string; unsubscribe: () => void } {
-  const job = jobs.get(type);
+  const job = jobs.get(jobKey(userId, type));
   if (!job) return { replay: [], unsubscribe: () => {} };
   job.listeners.add(onMsg);
   return {
@@ -213,8 +226,8 @@ export function attach(
 }
 
 /** 轻量状态：给左侧菜单「后台还在跑」的小标识轮询用，不带 log，省流量 */
-export function peek(type: TaskType): { hasJob: boolean; status?: JobStatus; filename?: string } {
-  const job = jobs.get(type);
+export function peek(userId: string, type: TaskType): { hasJob: boolean; status?: JobStatus; filename?: string } {
+  const job = jobs.get(jobKey(userId, type));
   if (!job) return { hasJob: false };
   return { hasJob: true, status: job.status, filename: job.filename };
 }
@@ -225,30 +238,35 @@ export function peek(type: TaskType): { hasJob: boolean; status?: JobStatus; fil
  */
 export async function loadJobsFromDisk(): Promise<void> {
   await mkdir(JOBS_DIR, { recursive: true });
-  const files = await readdir(JOBS_DIR).catch(() => [] as string[]);
-  for (const f of files) {
-    if (!f.endsWith(".json")) continue;
-    try {
-      const snapshot = JSON.parse(await readFile(join(JOBS_DIR, f), "utf8")) as JobSnapshot;
-      const job: Job = { ...snapshot, listeners: new Set() };
-      jobs.set(job.type, job);
-      if (job.status !== "running") continue;
+  const userDirs = await readdir(JOBS_DIR, { withFileTypes: true }).catch(() => []);
+  for (const entry of userDirs) {
+    if (!entry.isDirectory()) continue;
+    const userDir = join(JOBS_DIR, entry.name);
+    const files = await readdir(userDir).catch(() => [] as string[]);
+    for (const f of files) {
+      if (!f.endsWith(".json") || f.endsWith(".tmp")) continue;
+      try {
+        const snapshot = JSON.parse(await readFile(join(userDir, f), "utf8")) as JobSnapshot;
+        const job: Job = { ...snapshot, listeners: new Set() };
+        jobs.set(jobKey(job.userId, job.type), job);
+        if (job.status !== "running") continue;
 
-      console.warn(`[jobs] 恢复中断任务 ${job.type}/${job.id}，用落盘素材重新跑一遍`);
-      const buffer = await readFile(job.mediaPath).catch(() => null);
-      if (!buffer) {
-        job.status = "error";
-        job.log = [{ kind: "error", data: { code: "RESUME_FAILED", message: "服务重启后找不到原始素材，无法续跑，请重新上传" } }];
-        job.finishedAt = Date.now();
+        console.warn(`[jobs] 恢复中断任务 ${job.userId}/${job.type}/${job.id}，用落盘素材重新跑一遍`);
+        const buffer = await readFile(job.mediaPath).catch(() => null);
+        if (!buffer) {
+          job.status = "error";
+          job.log = [{ kind: "error", data: { code: "RESUME_FAILED", message: "服务重启后找不到原始素材，无法续跑，请重新上传" } }];
+          job.finishedAt = Date.now();
+          persist(job);
+          continue;
+        }
+        job.log = [];
+        job.startedAt = Date.now();
         persist(job);
-        continue;
+        startExecution(job, { buffer, originalname: job.filename, mimetype: job.mimetype, size: buffer.length });
+      } catch (e) {
+        console.warn(`[jobs] 恢复 ${entry.name}/${f} 失败:`, e instanceof Error ? e.message : e);
       }
-      job.log = [];
-      job.startedAt = Date.now();
-      persist(job);
-      startExecution(job, { buffer, originalname: job.filename, mimetype: job.mimetype, size: buffer.length });
-    } catch (e) {
-      console.warn(`[jobs] 恢复 ${f} 失败:`, e instanceof Error ? e.message : e);
     }
   }
 }

@@ -2,17 +2,17 @@
   "name": "data-cleansing",
   "private": true,
   "version": "0.1.0",
-  "description": "多模态数据清洗台 — 图片/音频/视频结构化，基于火山引擎 API",
+  "description": "AI 数据采集与智能清洗平台 — 表格数据清洗（web）+ 图片/音频/视频结构化（基于火山引擎 API）",
   "workspaces": [
-    "bff",
-    "web"
+    "bff"
   ],
   "scripts": {
     "dev": "concurrently -n bff,web -c cyan,magenta \"npm:dev:bff\" \"npm:dev:web\"",
     "dev:bff": "npm --workspace bff run dev",
-    "dev:web": "npm --workspace web run dev",
-    "build": "npm --workspace bff run build && npm --workspace web run build",
-    "typecheck": "npm --workspace bff run typecheck && npm --workspace web run typecheck"
+    "dev:web": "npm --prefix web run dev",
+    "install:web": "npm --prefix web install",
+    "build": "npm --workspace bff run build && npm --prefix web run build",
+    "typecheck": "npm --workspace bff run typecheck && npm --prefix web run typecheck"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

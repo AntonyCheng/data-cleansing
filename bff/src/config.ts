@@ -43,6 +43,12 @@ export const config = {
     modelVision: env("ARK_MODEL_VISION", "doubao-seed-2-1-turbo"), // 视频抽帧描述（重速度/成本）
     modelImage: env("ARK_MODEL_IMAGE", "doubao-seed-1-6-vision"), // 图片结构化（需字段 grounding）
   },
+  db: {
+    url: env("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/data_cleansing"),
+  },
+  auth: {
+    jwtSecret: env("JWT_SECRET", "dev-secret-change-me"),
+  },
 } as const;
 
 export function assertLiveConfig(): string[] {

@@ -12,3 +12,4 @@ tmp/
 exports/
 telemetry/
 jobs/
+pgdata/
