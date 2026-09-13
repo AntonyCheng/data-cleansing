@@ -10,7 +10,6 @@ import {
   Globe2,
   Braces,
   Inbox,
-  Radio,
   Film,
   AudioLines,
   Image as ImageIcon,
@@ -42,9 +41,7 @@ export function SourceIcon({
       ? Globe2
       : type === "API"
         ? Braces
-        : /Kafka|MQTT/.test(type)
-          ? Radio
-          : /视频/.test(type)
+        : /视频/.test(type)
             ? Film
             : /音频/.test(type)
               ? AudioLines

@@ -81,15 +81,11 @@ export default function Tasks({
       <section className="task-start" aria-label="数据接入方式">
         <div className="start-sources">
           {sourceOptions.map((s) => (
-            <button
-              key={s.name}
-              disabled={s.later}
-              onClick={() => onCreate(s.name)}
-            >
+            <button key={s.name} onClick={() => onCreate(s.name)}>
               <s.icon size={22} />
               <strong>{s.name}</strong>
-              <span>{s.later ? "即将支持" : s.description}</span>
-              {!s.later && <ArrowUpRight size={14} />}
+              <span>{s.description}</span>
+              <ArrowUpRight size={14} />
             </button>
           ))}
         </div>

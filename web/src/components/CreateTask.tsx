@@ -9,7 +9,6 @@ import {
   Database,
   Globe2,
   Braces,
-  Radio,
   Film,
   Image as ImageIcon,
   AudioLines,
@@ -33,12 +32,6 @@ export const sourceOptions = [
   { name: "图片", icon: ImageIcon, description: "证件 / 票据结构化" },
   { name: "音频", icon: AudioLines, description: "转写、说话人分离、摘要" },
   { name: "视频", icon: Film, description: "字幕、画面事件、章节摘要" },
-  {
-    name: "Kafka / MQTT",
-    icon: Radio,
-    description: "消息与实时数据",
-    later: true,
-  },
 ];
 // 三个媒体来源对应的 bff 任务类型，用于判断当前是否走媒体清洗分支
 const MEDIA_SOURCE_KIND: Record<string, MediaKind> = {
@@ -226,7 +219,6 @@ export default function CreateTask({
           <div className="source-selector">
             {sourceOptions.map((s) => (
               <button
-                disabled={s.later}
                 key={s.name}
                 className={type === s.name ? "selected" : ""}
                 onClick={() => {
@@ -236,7 +228,7 @@ export default function CreateTask({
               >
                 <s.icon size={22} />
                 <strong>{s.name}</strong>
-                <small>{s.later ? "后续开放" : s.description}</small>
+                <small>{s.description}</small>
               </button>
             ))}
           </div>
