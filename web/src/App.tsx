@@ -436,7 +436,7 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
               onSave={(config) => {
                 const next = saveDataService(store, config);
                 setStore(next);
-                setToast("服务配置已保存，待部署后可对外调用");
+                setToast("服务配置已保存，接口已生效可对外调用");
               }}
             />
           )}
@@ -535,7 +535,7 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
               </section>
               <Notice>
                 数据库 / API 连接器为真实接入（只读查询，凭证加密存储）；AI
-                对话本地规则优先匹配，未命中时由大模型理解并生成规则。入库写入本地演示表、对外数据服务接口尚未真正开放，均为本地演示。
+                对话本地规则优先匹配，未命中时由大模型理解并生成规则；数据服务保存配置后由服务端提供真实的对外接口，可直接调用。入库写入本地演示表，为本地演示。
               </Notice>
               <div className="form-footer">
                 <button

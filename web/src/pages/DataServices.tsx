@@ -10,6 +10,8 @@ import {
   FileJson,
   Network,
   Settings2,
+  Check,
+  Copy,
 } from "lucide-react";
 import type {
   DataServiceConfig,
@@ -85,7 +87,9 @@ export default function DataServices({
         <div>
           <div className="eyebrow">DATA SERVICES</div>
           <h1>数据服务</h1>
-          <p>仅展示清洗完成且校验通过的数据，可预览、导出和配置对外服务。</p>
+          <p>
+            仅展示清洗完成且校验通过的数据，可预览、导出和配置对外接口——保存后接口立即生效，可直接被外部系统调用。
+          </p>
         </div>
       </div>
       <section className="card" aria-label="数据服务列表">
@@ -229,9 +233,11 @@ export default function DataServices({
                               setModal({ taskId: task.id, kind: "config" })
                             }
                           >
-                            {status === SERVICE_STATUS.outdated.text
-                              ? "更新配置"
-                              : "配置服务"}
+                            {!config
+                              ? "配置服务"
+                              : status === SERVICE_STATUS.outdated.text
+                                ? "更新配置"
+                                : "编辑配置"}
                           </button>
                           {config && (
                             <button
@@ -353,6 +359,36 @@ export default function DataServices({
             )
           )}
         </Dialog>
+      )}
+    </div>
+  );
+}
+
+function EndpointLine({ path }: { path: string }) {
+  const [copied, setCopied] = useState(false);
+  const url = `${window.location.origin}${path}`;
+  const copyable = !path.includes("…");
+  return (
+    <div className="service-endpoint">
+      <b>GET</b>
+      <code>{url}</code>
+      {copyable && (
+        <button
+          type="button"
+          className="text-button service-endpoint-copy"
+          onClick={async () => {
+            try {
+              await navigator.clipboard.writeText(url);
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1500);
+            } catch {
+              // 剪贴板不可用（如非安全上下文）时静默忽略，用户仍可手动选中复制
+            }
+          }}
+        >
+          {copied ? <Check size={14} /> : <Copy size={14} />}
+          {copied ? "已复制" : "复制"}
+        </button>
       )}
     </div>
   );
@@ -534,7 +570,7 @@ function ServiceForm({
       </div>
       {config && config.runId !== task.runs[0].id && (
         <Notice>
-          保存后，服务配置将使用本次最新清洗结果。已部署的接口需要同步更新。
+          保存后，服务配置将使用本次最新清洗结果，接口立即生效返回最新数据。
         </Notice>
       )}
       <div className="form-columns">
@@ -574,10 +610,7 @@ function ServiceForm({
         />
         <small>2–48 位小写字母、数字或连字符，以字母开头。</small>
       </label>
-      <div className="service-endpoint">
-        <b>GET</b>
-        <code>/api/data-services/{draft.slug || "…"}</code>
-      </div>
+      <EndpointLine path={`/api/data-services/${draft.slug || "…"}`} />
       <label className="field">
         服务说明
         <textarea
@@ -620,7 +653,7 @@ function ServiceForm({
         </div>
       )}
       <p className="service-deployment-note">
-        配置保存在当前工作区；接入后端并部署后，外部系统才能调用。
+        保存后接口立即生效，上方地址即可被外部系统直接调用，无需额外部署。
       </p>
       <div className="form-footer">
         <button type="button" className="button" onClick={onCancel}>
@@ -673,17 +706,14 @@ function ServiceDocs({
         </Badge>
       </div>
       <p className="service-deployment-note">
-        以下为接口约定和真实清洗数据的响应示例。接口尚未部署，当前无法对外调用。
+        接口已生效，可直接对外调用；以下响应示例为当前清洗结果的真实数据。
       </p>
       {status === SERVICE_STATUS.outdated.text && (
         <Notice warning>
-          已产生新的清洗结果。以下文档对应已保存的旧版本，请更新配置后再部署。
+          已产生新的清洗结果。接口地址不变，但目前仍返回下方这份旧版本数据，更新配置后立即切换为最新数据。
         </Notice>
       )}
-      <div className="service-endpoint">
-        <b>GET</b>
-        <code>{definition.path}?page=1</code>
-      </div>
+      <EndpointLine path={`${definition.path}?page=1`} />
       <dl className="definition-list service-definition">
         <dt>来源任务</dt>
         <dd>{task.name}</dd>
@@ -696,7 +726,7 @@ function ServiceDocs({
         <dt>输出字段</dt>
         <dd>{definition.fields.map((field) => field.label).join("、")}</dd>
         <dt>数据更新</dt>
-        <dd>重新清洗后，确认更新配置并同步部署。</dd>
+        <dd>重新清洗后，更新配置即切换为最新数据，接口地址不变。</dd>
       </dl>
       <h4>响应示例 · 第 1 页</h4>
       <pre className="service-response" tabIndex={0}>

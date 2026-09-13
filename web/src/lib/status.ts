@@ -40,16 +40,16 @@ export const SERVICE_STATUS = {
     description: "数据已清洗完成，尚未保存接口标识、输出字段等服务配置。",
   },
   pending: {
-    text: "待部署",
-    tone: "blue",
+    text: "已生效",
+    tone: "green",
     description:
-      "服务配置已保存且对应最新清洗版本，接入后端并部署后才能对外调用。",
+      "服务配置已保存且对应最新清洗版本，接口地址已可直接对外调用。",
   },
   outdated: {
     text: "待更新",
     tone: "amber",
     description:
-      "清洗版本或字段已变化，需更新服务配置并同步部署；数据本身仍为清洗完成。",
+      "清洗版本或字段已变化；接口仍按原地址提供旧版本数据，更新配置后生效使用最新数据。",
   },
 } as const;
 

@@ -11,6 +11,7 @@ import { hashPassword, requireAuth, signToken, verifyPassword, verifyToken } fro
 import { assertLiveConfig, config } from "./config.js";
 import aiRouter from "./routes/ai.js";
 import connectorsRouter from "./routes/connectors.js";
+import dataServicesRouter from "./routes/dataServices.js";
 import { db } from "./db.js";
 import { attach, createJob, loadJobsFromDisk, peek } from "./jobs.js";
 import { mountMediaRoute, saveMedia } from "./media.js";
@@ -152,6 +153,9 @@ app.put("/api/workspace", requireAuth, async (req, res, next) => {
 
 // ---- P1：数据库 / API 连接器 ----
 app.use("/api/connectors", requireAuth, connectorsRouter);
+
+// ---- 对外数据服务：公开只读接口，不限来源站点，也不需要登录态 ----
+app.use("/api/data-services", cors({ origin: true }), dataServicesRouter);
 
 // ---- AI 对话改规则：本地正则未命中时的大模型兜底 ----
 app.use("/api/ai", requireAuth, aiRouter);

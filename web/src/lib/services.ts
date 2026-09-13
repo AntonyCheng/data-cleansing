@@ -114,7 +114,7 @@ export function serviceDefinition(task: DataTask, config: DataServiceConfig) {
   return {
     name: config.name,
     description: config.description,
-    status: "pending_deployment",
+    status: "live",
     method: "GET",
     path: `/api/data-services/${config.slug}`,
     source: { taskId: task.id, runId: config.runId },

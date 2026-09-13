@@ -5568,6 +5568,14 @@ code {
   min-width: 0;
   overflow-wrap: anywhere;
   color: #344c40;
+  flex: 1;
+}
+.service-endpoint-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .service-fields {
   border: 1px solid var(--border);

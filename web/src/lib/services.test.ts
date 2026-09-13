@@ -99,7 +99,7 @@ describe("清洗成果与数据服务", () => {
     expect(JSON.stringify(store)).toBe(before);
     expect(saved.tasks).toBe(store.tasks);
     expect(saved.warehouses).toBe(store.warehouses);
-    expect(serviceStatus(task, saved.services![0])).toBe("待部署");
+    expect(serviceStatus(task, saved.services![0])).toBe("已生效");
     const edited = saveDataService(saved, { ...draft, name: "新的服务名称" });
     expect(edited.services).toHaveLength(1);
     expect(edited.services![0].name).toBe("新的服务名称");
@@ -152,7 +152,7 @@ describe("清洗成果与数据服务", () => {
     expect(serviceStatus(task, draft)).toBe("待更新");
     expect(() => saveDataService(saved, draft)).toThrow("已更新");
     const updated = saveDataService(saved, { ...draft, runId: "new-run" });
-    expect(serviceStatus(task, updated.services![0])).toBe("待部署");
+    expect(serviceStatus(task, updated.services![0])).toBe("已生效");
   });
 
   it("响应示例按配置字段和版本分页，不混入原始、删除或异常数据", () => {
@@ -176,7 +176,7 @@ describe("清洗成果与数据服务", () => {
     expect(serviceResponse(task, draft, 999).data).toEqual([]);
     expect(() => serviceResponse(task, draft, 0)).toThrow();
     const definition = serviceDefinition(task, draft);
-    expect(definition.status).toBe("pending_deployment");
+    expect(definition.status).toBe("live");
     expect(definition.path).toBe("/api/data-services/order-data");
     expect(definition.source.runId).toBe(draft.runId);
     expect(() =>
