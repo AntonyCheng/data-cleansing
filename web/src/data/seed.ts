@@ -1,6 +1,7 @@
 import type { DataRow, DataTask, Store } from "../lib/types";
 import { execute, inferFields, recommend } from "../lib/engine";
 import { makeRule, ruleCatalog } from "./rules";
+import { heilongjiangCityRows } from "./heilongjiang";
 const names = [
   "陈雨桐",
   "王子轩",
@@ -144,8 +145,18 @@ export function createSeed(): Store {
     ruleCatalog.find((r) => r.id === "customer-dedup")!,
     task.fields,
   );
+  // 黑龙江省地市经济与人口指标：真实数据（黑龙江统计年鉴2025 + 第七次全国人口普查公报），
+  // 见 data/heilongjiang.ts 顶部注释的完整来源说明；保持"待清洗"状态，供现场演示地区别名规则和去重。
+  const heilongjiang = makeTask(
+    "黑龙江省地市经济与人口指标",
+    "黑龙江省统计局 · 黑龙江统计年鉴2025 / 第七次全国人口普查公报",
+    "Excel",
+    heilongjiangCityRows(),
+    true,
+  );
+  heilongjiang.id = "heilongjiang";
   return {
-    tasks: [task, orders, products],
+    tasks: [task, orders, products, heilongjiang],
     mediaTasks: [],
     services: [],
     savedRules: [

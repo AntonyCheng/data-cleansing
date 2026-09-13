@@ -20,6 +20,30 @@ services:
     mem_limit: 512m
     restart: unless-stopped
 
+  # 演示用"外部数据源"：与应用自己的 db 完全独立，只用来在"数据库连接器"演示时
+  # 现场连接、拉取黑龙江省真实经济与人口数据（见 demo-data/heilongjiang-init.sql 顶部的数据来源说明）。
+  demo-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: ${DEMO_DB_PASSWORD:-demo12345}
+      POSTGRES_DB: heilongjiang
+    ports:
+      # 注意两种场景端口不一样：
+      # - 整套用 docker compose 起（bff 也是容器）：连接器里填 host=demo-db port=5432（同一 compose 网络内部访问）
+      # - 本机直接 npm run dev 调试 bff（不进容器）：连接器里填 host=localhost port=5434（下面这条宿主机映射）
+      - "5434:5432"
+    volumes:
+      - ./demo-data:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U demo"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    mem_limit: 256m
+    restart: unless-stopped
+
   bff:
     build:
       context: .
