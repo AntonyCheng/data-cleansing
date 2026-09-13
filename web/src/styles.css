@@ -4699,6 +4699,11 @@ code {
   .copilot-bottom {
     flex-shrink: 0;
   }
+  .media-workbench-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+  }
   .workspace-bottom-note {
     flex-shrink: 0;
   }

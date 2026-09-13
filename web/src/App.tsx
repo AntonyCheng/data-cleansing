@@ -241,13 +241,12 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
           ))}
         </nav>
         <div className="recent-tasks-nav">
-          <span className="nav-section-label">最近任务</span>
+          <span className="nav-section-label">全部任务</span>
           {[
             ...store.tasks.map((t) => ({ id: t.id, name: t.name, updatedAt: t.updatedAt, media: false as const })),
             ...mediaTasks.map((t) => ({ id: t.id, name: t.name, updatedAt: t.updatedAt, media: true as const, kind: t.kind })),
           ]
             .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-            .slice(0, 3)
             .map((t) => {
               const isSelected = t.media ? selectedMedia?.id === t.id : selected?.id === t.id;
               const Icon = t.media ? MEDIA_KIND_ICON[t.kind] : FileSpreadsheet;
