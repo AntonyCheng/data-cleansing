@@ -19,13 +19,15 @@ import {
 } from "lucide-react";
 import type { DataTask, Rule, Run } from "../lib/types";
 import { analyze, parseInstruction } from "../lib/engine";
+import { buildRuleMatch, suggestRule, type RuleMatch } from "../lib/ai";
+import { ruleCatalog } from "../data/rules";
 import { Badge, Notice } from "./UI";
 type Tab = "数据质量" | "一键清洗" | "清洗规则" | "AI 对话";
 type Message = {
   id: string;
   role: "user" | "assistant";
   text: string;
-  match?: ReturnType<typeof parseInstruction>;
+  match?: RuleMatch | null;
   done?: boolean;
 };
 export default function Copilot({
@@ -61,13 +63,17 @@ export default function Copilot({
   const run = task.runs[0];
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const [thinkingLabel, setThinkingLabel] = useState("正在匹配规则…");
   const [messages, setMessages] = useState<Message[]>([]);
   const [allIssues, setAllIssues] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (messages.length) bottom.current?.scrollIntoView({ block: "nearest" });
   }, [messages, busy]);
-  function send(input: string) {
+  function reply(text: string, match?: RuleMatch | null) {
+    setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text, match }]);
+  }
+  async function send(input: string) {
     if (!input.trim() || busy) return;
     setMessages((m) => [
       ...m,
@@ -75,23 +81,51 @@ export default function Copilot({
     ]);
     setText("");
     setBusy(true);
-    setTimeout(() => {
-      const match = parseInstruction(input, task.fields);
-      setMessages((m) => [
-        ...m,
-        {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          text: match
-            ? match.explanation
-            : /质量|问题|分析/.test(input)
-              ? `已检查 ${task.raw.length} 行数据，发现 ${profile.issues.length} 项问题，涉及 ${profile.problemRows} 行。你可以在“数据质量”中定位问题，或生成清洗方案。`
-              : "这条需求暂未匹配到本地规则。当前支持空值分流、去重、空格处理、手机号、地区、日期、金额及脱敏。更复杂的语义处理需接入模型后使用。",
-          match,
-        },
-      ]);
+    setThinkingLabel("正在匹配规则…");
+    // 本地正则先匹配，零成本零延迟，覆盖大部分常见说法
+    const local = await new Promise<ReturnType<typeof parseInstruction>>((resolve) =>
+      setTimeout(() => resolve(parseInstruction(input, task.fields)), 550),
+    );
+    if (local) {
+      reply(local.explanation, local);
       setBusy(false);
-    }, 550);
+      return;
+    }
+    if (/质量|问题|分析/.test(input)) {
+      reply(
+        `已检查 ${task.raw.length} 行数据，发现 ${profile.issues.length} 项问题，涉及 ${profile.problemRows} 行。你可以在“数据质量”中定位问题，或生成清洗方案。`,
+      );
+      setBusy(false);
+      return;
+    }
+    // 本地规则没命中，问大模型兜底——模型只能从规则目录里选，选出来的还要再过一遍白名单校验
+    setThinkingLabel("本地规则未命中，正在请求 AI 理解你的需求…");
+    try {
+      const response = await suggestRule(
+        input,
+        task.fields.map((f) => ({ key: f.key, label: f.label, type: f.type })),
+        ruleCatalog.map((r) => ({
+          id: r.id,
+          name: r.name,
+          description: r.description,
+          operation: r.operation,
+          target: r.target,
+          params: r.params,
+        })),
+      );
+      const match = buildRuleMatch(response, task.fields);
+      reply(
+        response.explanation ||
+          (match ? match.explanation : "这条需求暂未匹配到本地规则，AI 也没能理解出具体操作，换种说法试试？"),
+        match,
+      );
+    } catch (e) {
+      reply(
+        `这条需求暂未匹配到本地规则。当前支持空值分流、去重、空格处理、手机号、地区、日期、金额及脱敏。${e instanceof Error ? `（AI 兜底也失败了：${e.message}）` : ""}`,
+      );
+    } finally {
+      setBusy(false);
+    }
   }
   function addMatch(m: Message, save: boolean) {
     if (!m.match) return;
@@ -478,7 +512,7 @@ export default function Copilot({
             {busy && (
               <div className="thinking" role="status">
                 <Sparkles size={14} />
-                正在匹配规则…
+                {thinkingLabel}
               </div>
             )}
             <div ref={bottom} />
