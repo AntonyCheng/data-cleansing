@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # ---- 构建阶段：vite build 出静态站点 ----
 FROM node:22-bookworm-slim AS builder
 WORKDIR /app

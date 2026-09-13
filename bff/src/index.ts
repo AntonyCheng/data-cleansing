@@ -15,6 +15,7 @@ import { db } from "./db.js";
 import { attach, createJob, loadJobsFromDisk, peek } from "./jobs.js";
 import { mountMediaRoute, saveMedia } from "./media.js";
 import { migrateToLatest } from "./migrate.js";
+import { ensureDemoAccount } from "./seedDemo.js";
 import type { TaskStreamMsg, TaskType } from "./types.js";
 
 // 兜底：任何位置漏掉的未捕获 rejection 只记日志，不崩进程——后台任务槽的核心价值就是
@@ -251,6 +252,9 @@ wss.on("connection", (ws, req) => {
 
 // 建表必须在接任何请求之前跑完；迁移本身幂等，容器重建/多次启动都安全
 await migrateToLatest();
+
+// 演示账号 + 演示数据一起打进去；账号已存在就跳过，不会覆盖现场的修改
+await ensureDemoAccount();
 
 // 任务槽必须在开始接请求之前恢复完，否则重启瞬间 peek/attach 会看到一个假的「没有任务」
 await loadJobsFromDisk();

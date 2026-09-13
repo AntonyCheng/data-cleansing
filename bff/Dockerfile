@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # ---- 构建阶段：装全量依赖 + 编译 TS ----
 FROM node:22-bookworm-slim AS builder
 WORKDIR /app

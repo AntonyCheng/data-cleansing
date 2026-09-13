@@ -53,6 +53,12 @@ export const config = {
     // 32 字节十六进制（openssl rand -hex 32），用于加密数据库连接器的密码 / API Token
     encryptionKey: env("CONNECTOR_ENCRYPTION_KEY"),
   },
+  // 部署时自动创建的演示账号（见 seedDemo.ts）；留空则不创建
+  demoAccount: {
+    email: env("DEMO_ACCOUNT_EMAIL"),
+    password: env("DEMO_ACCOUNT_PASSWORD"),
+    displayName: env("DEMO_ACCOUNT_NAME", "演示账号"),
+  },
 } as const;
 
 export function assertLiveConfig(): string[] {
