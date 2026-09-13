@@ -2,6 +2,7 @@ import type { DataRow, DataTask, Store } from "../lib/types";
 import { execute, inferFields, recommend } from "../lib/engine";
 import { makeRule, ruleCatalog } from "./rules";
 import { heilongjiangCityRows } from "./heilongjiang";
+import { createMediaSeed } from "./mediaSeed";
 const names = [
   "陈雨桐",
   "王子轩",
@@ -157,7 +158,7 @@ export function createSeed(): Store {
   heilongjiang.id = "heilongjiang";
   return {
     tasks: [task, orders, products, heilongjiang],
-    mediaTasks: [],
+    mediaTasks: createMediaSeed(),
     services: [],
     savedRules: [
       {
