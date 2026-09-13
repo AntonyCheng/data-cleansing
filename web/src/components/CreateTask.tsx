@@ -20,6 +20,7 @@ import { analyze } from "../lib/engine";
 import { makeTask, sampleRows } from "../data/seed";
 import { Badge, Notice } from "./UI";
 import { MEDIA_KIND_LABEL, startMediaTask, type MediaKind } from "../lib/media";
+import ConnectorSource from "./ConnectorSource";
 export const sourceOptions = [
   {
     name: "Excel / CSV",
@@ -71,12 +72,17 @@ export default function CreateTask({
   const [file, setFile] = useState("");
   const [rows, setRows] = useState<DataRow[]>([]);
   const [address, setAddress] = useState("");
-  const [databaseType, setDatabaseType] = useState("MySQL");
   const [schedule, setSchedule] = useState("手动触发");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [parsed, setParsed] = useState<DataTask | null>(null);
   const mediaKind = MEDIA_SOURCE_KIND[type];
+  const isConnectorFlow = type === "数据库" || type === "API";
+  function handleConnectorRows(rows: DataRow[], defaultName: string, sourceLabel: string, sourceType: string) {
+    const finalName = name.trim() || defaultName;
+    setName(finalName);
+    setParsed(makeTask(finalName, sourceLabel, sourceType, rows, false));
+  }
   const [mediaFile, setMediaFile] = useState<File | null>(null);
   const [frameIntervalMs, setFrameIntervalMs] = useState(3000);
   async function submitMedia() {
@@ -173,11 +179,11 @@ export default function CreateTask({
       setError("请先选择数据文件，或使用样例数据。");
       return;
     }
-    if (type !== "Excel / CSV" && !address.trim()) {
-      setError("请填写数据源地址。");
-      return;
-    }
-    if (["API", "URL / 网页"].includes(type)) {
+    if (type === "URL / 网页") {
+      if (!address.trim()) {
+        setError("请填写数据源地址。");
+        return;
+      }
       try {
         const u = new URL(address);
         if (!["http:", "https:"].includes(u.protocol)) throw new Error();
@@ -192,15 +198,7 @@ export default function CreateTask({
         makeTask(
           name.trim(),
           type === "Excel / CSV" ? file : address,
-          type === "Excel / CSV"
-            ? file.endsWith(".csv")
-              ? "CSV"
-              : "Excel"
-            : type === "数据库"
-              ? databaseType
-              : type === "URL / 网页"
-                ? "URL"
-                : "API",
+          type === "Excel / CSV" ? (file.endsWith(".csv") ? "CSV" : "Excel") : "URL",
           type === "Excel / CSV" ? rows : sampleRows(),
           type !== "Excel / CSV" || file === "客户数据样例.xlsx",
         ),
@@ -321,50 +319,28 @@ export default function CreateTask({
                 </Notice>
               )}
             </>
+          ) : isConnectorFlow ? (
+            <ConnectorSource kind={type as "数据库" | "API"} onRows={handleConnectorRows} />
           ) : (
             <>
-              <div className="form-columns">
-                {type === "数据库" && (
-                  <label className="field">
-                    数据库类型
-                    <select
-                      value={databaseType}
-                      onChange={(e) => setDatabaseType(e.target.value)}
-                    >
-                      <option>MySQL</option>
-                      <option>PostgreSQL</option>
-                      <option>Oracle</option>
-                      <option>达梦</option>
-                    </select>
-                  </label>
-                )}
-                <label className="field">
-                  同步方式
-                  <select
-                    value={schedule}
-                    onChange={(e) => setSchedule(e.target.value)}
-                  >
-                    <option>手动触发</option>
-                    <option>每天 09:00</option>
-                    <option>每小时</option>
-                    <option>增量同步</option>
-                  </select>
-                </label>
-              </div>
               <label className="field">
-                {type === "数据库"
-                  ? "连接地址 / 数据库"
-                  : type === "API"
-                    ? "接口地址或 OpenAPI 文档 URL"
-                    : "网页 URL"}
+                同步方式
+                <select
+                  value={schedule}
+                  onChange={(e) => setSchedule(e.target.value)}
+                >
+                  <option>手动触发</option>
+                  <option>每天 09:00</option>
+                  <option>每小时</option>
+                  <option>增量同步</option>
+                </select>
+              </label>
+              <label className="field">
+                网页 URL
                 <input
                   value={address}
                   onChange={(e) => setAddress(e.target.value)}
-                  placeholder={
-                    type === "数据库"
-                      ? "localhost:3306 / customer"
-                      : "https://example.com/data"
-                  }
+                  placeholder="https://example.com/data"
                 />
               </label>
               <Notice>
@@ -390,20 +366,22 @@ export default function CreateTask({
             <button className="button" onClick={onClose}>
               取消
             </button>
-            <button
-              className="button primary"
-              disabled={busy || (!!mediaKind && !mediaFile)}
-              onClick={mediaKind ? submitMedia : next}
-            >
-              <Sparkles size={16} />
-              {mediaKind
-                ? busy
-                  ? "正在提交…"
-                  : "提交清洗"
-                : busy
-                  ? "正在解析数据…"
-                  : "开始解析"}
-            </button>
+            {!isConnectorFlow && (
+              <button
+                className="button primary"
+                disabled={busy || (!!mediaKind && !mediaFile)}
+                onClick={mediaKind ? submitMedia : next}
+              >
+                <Sparkles size={16} />
+                {mediaKind
+                  ? busy
+                    ? "正在提交…"
+                    : "提交清洗"
+                  : busy
+                    ? "正在解析数据…"
+                    : "开始解析"}
+              </button>
+            )}
           </div>
         </>
       ) : (

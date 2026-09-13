@@ -6213,3 +6213,68 @@ code {
   align-items: center;
   gap: 6px;
 }
+
+/* ---- 数据库 / API 连接器（创建任务向导） ---- */
+.connector-source {
+  display: flex;
+  flex-direction: column;
+}
+.field-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #647d63;
+  margin: 4px 0 17px;
+}
+.connector-remove {
+  align-self: flex-start;
+  margin: -8px 0 8px;
+  color: var(--red, #bf6256);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.connector-form,
+.connector-extract {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px 4px;
+  margin-top: 6px;
+  background: #fbfdfb;
+}
+.connector-advanced-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0 10px;
+}
+.connector-advanced-toggle svg {
+  transition: transform 0.15s ease;
+}
+.connector-preview {
+  margin-top: 14px;
+}
+.connector-preview-table {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-top: 10px;
+}
+.connector-preview-table table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.connector-preview-table th,
+.connector-preview-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+.connector-preview-table th {
+  color: var(--secondary);
+  font-weight: 600;
+  background: #f7f9f8;
+}

@@ -49,6 +49,10 @@ export const config = {
   auth: {
     jwtSecret: env("JWT_SECRET", "dev-secret-change-me"),
   },
+  connectors: {
+    // 32 字节十六进制（openssl rand -hex 32），用于加密数据库连接器的密码 / API Token
+    encryptionKey: env("CONNECTOR_ENCRYPTION_KEY"),
+  },
 } as const;
 
 export function assertLiveConfig(): string[] {

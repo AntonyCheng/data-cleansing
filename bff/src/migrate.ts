@@ -35,6 +35,27 @@ const migrations: Record<string, Migration> = {
       await db.schema.dropTable("workspaces").execute();
     },
   },
+  // P1：数据库 / API 连接器。config 是非敏感连接信息（host/port/database/username/baseUrl…），
+  // secret 是加密后的密码/Token（见 crypto.ts）——绝不会明文落库，也绝不会整个 workspace JSON
+  // 一起回传给浏览器（那是 GET /api/workspace 的返回内容，混进去等于把密码发到前端）。
+  "003_connectors": {
+    async up(db) {
+      await db.schema
+        .createTable("connectors")
+        .addColumn("id", "uuid", (col) => col.primaryKey())
+        .addColumn("owner_id", "uuid", (col) => col.notNull().references("users.id").onDelete("cascade"))
+        .addColumn("kind", "text", (col) => col.notNull())
+        .addColumn("name", "text", (col) => col.notNull())
+        .addColumn("config", "jsonb", (col) => col.notNull())
+        .addColumn("secret", "text", (col) => col.notNull())
+        .addColumn("created_at", "timestamptz", (col) => col.notNull().defaultTo(sql`now()`))
+        .addColumn("updated_at", "timestamptz", (col) => col.notNull().defaultTo(sql`now()`))
+        .execute();
+    },
+    async down(db) {
+      await db.schema.dropTable("connectors").execute();
+    },
+  },
 };
 
 const provider: MigrationProvider = {

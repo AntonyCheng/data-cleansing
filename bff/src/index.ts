@@ -9,6 +9,7 @@ import multer from "multer";
 import { WebSocket, WebSocketServer } from "ws";
 import { hashPassword, requireAuth, signToken, verifyPassword, verifyToken } from "./auth.js";
 import { assertLiveConfig, config } from "./config.js";
+import connectorsRouter from "./routes/connectors.js";
 import { db } from "./db.js";
 import { attach, createJob, loadJobsFromDisk, peek } from "./jobs.js";
 import { mountMediaRoute, saveMedia } from "./media.js";
@@ -146,6 +147,9 @@ app.put("/api/workspace", requireAuth, async (req, res, next) => {
     next(e);
   }
 });
+
+// ---- P1：数据库 / API 连接器 ----
+app.use("/api/connectors", requireAuth, connectorsRouter);
 
 // ---- 后台任务槽：每用户每类型最多一个在跑，与浏览器连接生命周期解耦 ----
 

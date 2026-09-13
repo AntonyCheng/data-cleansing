@@ -19,9 +19,25 @@ export interface WorkspacesTable {
   updated_at: Generated<Date>;
 }
 
+export type ConnectorKind = "mysql" | "postgres" | "api";
+
+// config 是非敏感连接信息，secret 是加密后的密码/Token（crypto.ts）——两者分列存放，
+// 是为了 GET /api/connectors 可以直接 select 除 secret 外的所有列，不用每次手动摘掉敏感字段。
+export interface ConnectorsTable {
+  id: string;
+  owner_id: string;
+  kind: ConnectorKind;
+  name: string;
+  config: unknown;
+  secret: string;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
 interface Database {
   users: UsersTable;
   workspaces: WorkspacesTable;
+  connectors: ConnectorsTable;
 }
 
 export const pool = new pg.Pool({ connectionString: config.db.url });
