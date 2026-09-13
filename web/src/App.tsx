@@ -487,7 +487,7 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
                 {[
                   [
                     "接入数据",
-                    "在创建任务中上传 CSV / XLSX，或填写数据库、API 和 URL 来源后体验样例。",
+                    "在创建任务中上传 CSV / XLSX，或连接真实数据库 / API 抓取数据（URL / 网页来源仍是样例）。",
                   ],
                   [
                     "查看数据与质量",
@@ -534,8 +534,8 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
                 </p>
               </section>
               <Notice>
-                实际在本地执行：文件解析、清洗、异常分流、导出及演示入库。AI
-                语义使用有限规则匹配，远程采集、数据库写入和对外数据接口尚未连接后端。
+                数据库 / API 连接器为真实接入（只读查询，凭证加密存储）；AI
+                对话本地规则优先匹配，未命中时由大模型理解并生成规则。入库写入本地演示表、对外数据服务接口尚未真正开放，均为本地演示。
               </Notice>
               <div className="form-footer">
                 <button
