@@ -110,7 +110,10 @@ app.get("/api/auth/me", requireAuth, async (req, res, next) => {
       .select(["id", "email", "display_name", "role"])
       .where("id", "=", req.userId!)
       .executeTakeFirst();
-    if (!user) throw Object.assign(new Error("账号不存在"), { code: "NOT_FOUND", status: 404 });
+    // 必须是 401 而不是 404：token 签名有效但账号已被删，对前端来说就是"登录态失效"，
+    // 401 才会触发自动登出回登录页。给 404 会被当成普通错误，前端走离线兜底进工作区，
+    // 然后卡在"同步失败"里出不来（真实踩过）。
+    if (!user) throw Object.assign(new Error("账号不存在"), { code: "UNAUTHORIZED", status: 401 });
     // role 必须返回：前端侧边栏的「设置」入口靠它决定是否显示
     res.json({ id: user.id, email: user.email, displayName: user.display_name, role: user.role });
   } catch (e) {
@@ -144,6 +147,13 @@ app.put("/api/workspace", requireAuth, async (req, res, next) => {
       .execute();
     res.status(204).end();
   } catch (e) {
+    // 外键违反 = 这个 user_id 在 users 里已经不存在了（账号被删但 token 还没过期）。
+    // 转成 401 让前端自动登出——否则会以 500 冒出去，前端只会显示"同步失败"，
+    // 用户就卡在一个看着像工作区、但什么都存不下来的页面里。
+    if ((e as { code?: string }).code === "23503") {
+      next(Object.assign(new Error("账号不存在"), { code: "UNAUTHORIZED", status: 401 }));
+      return;
+    }
     next(e);
   }
 });
