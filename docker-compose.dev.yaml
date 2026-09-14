@@ -1,0 +1,36 @@
+# 本地开发用的端口覆盖层，部署演示时不要带这个文件。
+#
+# 基础 docker-compose.yaml 只对外暴露 web 的 8080（nginx 已把 /api/ 反代给 bff，浏览器不需要别的端口）。
+# 但这个文件把四个「宿主机要直连容器」的调试端口补回来——都在 README「本地开发」那套工作流里用得上：
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.dev.yaml up -d
+#
+# 端口都是绑 127.0.0.1 而非 0.0.0.0：Docker 发布端口会绕过 ufw/firewalld（直接写 iptables 的 DOCKER 链），
+# 绑回环才能保证即使开发机上开着防火墙，这些库/服务也不会被局域网或公网连上。
+#
+# 需不需要带这个文件，取决于 bff 跑在哪：
+#   - bff 也在容器里（docker compose up）：什么都不用加，bff 走服务名直连，本文件纯属多余。
+#   - bff 在宿主机裸跑（npm run dev）：需要 db:5432、demo-db:5434、demo-api:8090，
+#     因为此时 bff 进程在容器网外，只能经宿主机端口访问这些服务。
+#     （8787 是另一回事：裸跑 bff 时 8787 由宿主机进程自己占着，容器 bff 根本没起。
+#       8787 只在「容器 bff 也在跑、想绕过 nginx 直连它调试」时才有意义。）
+
+services:
+  db:
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  demo-db:
+    # 连接器（跑在宿主机 bff 里）填 host=localhost port=5434
+    ports:
+      - "127.0.0.1:5434:5432"
+
+  demo-api:
+    # 连接器/网页来源填 http://localhost:8090
+    ports:
+      - "127.0.0.1:8090:8090"
+
+  bff:
+    # 绕过 nginx 直连容器 bff 调试用
+    ports:
+      - "127.0.0.1:8787:8787"

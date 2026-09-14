@@ -7,8 +7,8 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: data_cleansing
-    ports:
-      - "5432:5432" # 本地不跑 bff 容器、直接 npm run dev 调试时需要连到宿主机端口，可删
+    # 不映射宿主机端口：bff 容器走 compose 网直连 db:5432。
+    # 宿主机裸跑 bff（npm run dev）需要连库时，用 docker-compose.dev.yaml 起（见 README 本地开发）。
     volumes:
       - ./pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -28,11 +28,8 @@ services:
       POSTGRES_USER: demo
       POSTGRES_PASSWORD: ${DEMO_DB_PASSWORD:-demo12345}
       POSTGRES_DB: heilongjiang
-    ports:
-      # 注意两种场景端口不一样：
-      # - 整套用 docker compose 起（bff 也是容器）：连接器里填 host=demo-db port=5432（同一 compose 网络内部访问）
-      # - 本机直接 npm run dev 调试 bff（不进容器）：连接器里填 host=localhost port=5434（下面这条宿主机映射）
-      - "5434:5432"
+    # 同样不映射宿主机端口：连接器（跑在 bff 容器里）填 host=demo-db port=5432 走 compose 网。
+    # 宿主机裸跑 bff 调试时要填 host=localhost port=5434，那需要 docker-compose.dev.yaml。
     volumes:
       - ./demo-data:/docker-entrypoint-initdb.d:ro
     healthcheck:
@@ -47,9 +44,9 @@ services:
   # 演示用"外部 API + 演示网页"：轻量零依赖 Node 服务，内嵌黑龙江省真实年度序列数据
   # （对俄贸易 / 大庆油田，见 demo-api/data.json 的来源说明），演示"API 连接器"的
   # API Key 鉴权（X-Api-Key）和页码翻页；同时托管 /page/bulletin.html 静态公报页，
-  # 供"URL / 网页"来源演示真实抓取与表格解析。端口两种场景同理：
-  # - 容器网内（bff 抓网页/调 API）：http://demo-api:8090
-  # - 本机裸跑 bff 调试：http://localhost:8090
+  # 供"URL / 网页"来源演示真实抓取与表格解析。不映射宿主机端口：
+  # bff 容器抓网页/调 API 走 compose 网 http://demo-api:8090；
+  # 本机裸跑 bff 调试要填 http://localhost:8090 的话，用 docker-compose.dev.yaml。
   demo-api:
     build:
       context: ./demo-api
@@ -57,8 +54,6 @@ services:
     image: data-cleansing-demo-api
     environment:
       DEMO_API_KEY: ${DEMO_API_KEY:-hlj-demo-2026}
-    ports:
-      - "8090:8090"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:8090/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 10s
@@ -85,8 +80,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    ports:
-      - "8787:8787" # 直连调试用，可删
+    # 不映射宿主机端口：浏览器只经 web 的 nginx 走 /api/ 反代过来（见 web/nginx.conf）。
+    # 要绕过 nginx 直连容器 bff 调试时，用 docker-compose.dev.yaml。
     volumes:
       - ./exports:/app/exports # 数仓回传落盘
       - ./telemetry:/app/telemetry # 埋点落盘
@@ -110,6 +105,8 @@ services:
       context: ./web
       dockerfile: Dockerfile
     image: data-cleansing-web
+    # 全栈唯一对外暴露的端口：nginx 托管前端静态资源，并把 /api/（含 WebSocket）反代给 bff:8787。
+    # 其余服务一律不映射宿主机端口——db/demo-db/demo-api 都只在 compose 网内被 bff 访问。
     ports:
       - "8080:80" # 打开 http://localhost:8080
     depends_on:

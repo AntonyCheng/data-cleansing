@@ -28,6 +28,8 @@ docker compose up -d --build
 
 打开 <http://localhost:8080>，注册账号即可使用。`samples/` 目录下提供了图片 / 音频 / 视频三个示例文件；表格清洗登录后自带 6 个黑龙江省真实数据任务（「黑龙江省地市经济与人口指标」已预清洗、入库并配置好对外服务，其余 5 个保持待清洗供现场演示，见下），数据库连接器可以直接连 `demo-db`（内置的演示数据源，见下）体验真实连接抓取。
 
+**对外只暴露 8080 一个端口**：web 的 nginx 既托管前端，也把 `/api/`（含 WebSocket）反代给 `bff:8787`，所以浏览器只需要这一个入口。`db` / `demo-db` / `demo-api` / `bff` 一律不映射宿主机端口，只在 compose 网内被 `bff` 按服务名访问——演示机部署到公网时不用担心数据库和内部服务跟着暴露。（本地调试要直连这些容器时，见「本地开发」。）
+
 未填写火山引擎密钥时，图片/音频/视频入口会提示服务不可用，但表格数据清洗和数据库/API 连接器不受影响。
 
 ## 演示数据源 demo-db / demo-api
@@ -44,14 +46,14 @@ docker compose up -d --build
 | `hlj_tourism` | 哈尔滨近三个冰雪季游客量与花费（哈尔滨市文广旅局） |
 | `hlj_scenic_spots` | 全省 438 家 A 级旅游景区（省文旅厅《2023年全省A级旅游景区名录》） |
 
-在"创建数据任务 → 数据库"里新建连接：整套 `docker compose up` 启动时 host 填 `demo-db`、端口 `5432`；本机 `npm run dev` 调试 bff 时 host 填 `localhost`、端口 `5434`。数据库名 `heilongjiang`，用户名 `demo`，密码见 `.env` 的 `DEMO_DB_PASSWORD`。
+在"创建数据任务 → 数据库"里新建连接：整套 `docker compose up` 启动时 host 填 `demo-db`、端口 `5432`；本机 `npm run dev` 裸跑 bff 调试时（需带 `docker-compose.dev.yaml`）host 填 `localhost`、端口 `5434`。数据库名 `heilongjiang`，用户名 `demo`，密码见 `.env` 的 `DEMO_DB_PASSWORD`。
 
 **demo-api**（零依赖 Node 服务）：演示"API 连接器"的 API Key 鉴权与翻页抓取——
 
 - `GET /api/trade`：黑龙江省货物贸易年度序列（2021-2024，哈尔滨海关）
 - `GET /api/oilfield`：大庆油田年度生产序列（2022-2024，新华网/国资委）
 - `GET /page/bulletin.html`：免鉴权的"公报摘要"演示网页，供"URL / 网页"来源演示服务端真实抓取 + 表格解析
-- 连接器配置：鉴权方式 API Key，请求头名 `X-Api-Key`，值见 `.env` 的 `DEMO_API_KEY`（默认 `hlj-demo-2026`）；地址同理，容器网内 `http://demo-api:8090`，本机调试 `http://localhost:8090`
+- 连接器配置：鉴权方式 API Key，请求头名 `X-Api-Key`，值见 `.env` 的 `DEMO_API_KEY`（默认 `hlj-demo-2026`）；容器内 bff 填 `http://demo-api:8090`，本机裸跑 bff 调试时（需带 `docker-compose.dev.yaml`）填 `http://localhost:8090`
 
 数据修改方式：改 `web/src/data/heilongjiang.ts` / `hlj2025.ts` / `hljScenic.ts`（唯一数据真源），然后 `npx tsx demo-data/generate.mts` 重新生成 SQL 与 API 数据。
 
@@ -61,16 +63,22 @@ docker compose up -d --build
 npm install              # 安装根工作区（bff）
 npm run install:web      # 安装前端 web 的独立依赖
 cp .env.example .env
+docker compose -f docker-compose.yaml -f docker-compose.dev.yaml up -d db demo-db demo-api
+npm run migrate --workspace bff          # 建表
 npm run dev               # 前端 http://localhost:5173，后端 :8787
 ```
 
-前端 `web/` 未纳入根 npm workspaces（保留自己独立的依赖与锁文件，可单独 `cd web && npm install && npm run dev` 启动）；`bff/` 是根工作区成员。本地开发需要一个 PostgreSQL（`docker compose up -d db` 起应用自己的库，`npm run migrate --workspace bff` 建表）。
+前端 `web/` 未纳入根 npm workspaces（保留自己独立的依赖与锁文件，可单独 `cd web && npm install && npm run dev` 启动）；`bff/` 是根工作区成员。
+
+**为什么要带 `-f docker-compose.dev.yaml`**：基础文件为了安全不映射任何宿主机端口（对外只有 web 的 8080），而裸跑在宿主机的 `bff` 进程在 compose 网外，够不到 `db` / `demo-db` / `demo-api`，必须经宿主机端口访问——这个覆盖层就是补回 `db:5432`、`demo-db:5434`、`demo-api:8090`（以及绕过 nginx 直连容器 bff 的 `8787`），并且都绑在 `127.0.0.1`，不会对局域网/公网暴露。跑整套容器时 bff 走服务名直连，不需要这个文件。
 
 ## 工程结构
 
 ```text
-web/          前端：数据任务 / 清洗规则 / 数据服务 + 图片/音频/视频清洗工作台
-bff/          后端：登录鉴权、工作区持久化、数据库/API 连接器、图片/音频/视频结构化
-demo-data/    demo-db 的初始化数据（黑龙江省真实经济与人口数据，见上）
-samples/      体验用示例素材
+web/                    前端：数据任务 / 清洗规则 / 数据服务 + 图片/音频/视频清洗工作台
+bff/                    后端：登录鉴权、工作区持久化、数据库/API 连接器、图片/音频/视频结构化
+demo-data/              demo-db 的初始化数据（黑龙江省真实数据，由 demo-data/generate.mts 生成，见上）
+demo-api/               demo-api 演示服务（对俄贸易/大庆油田序列 + 公报演示页，见上）
+docker-compose.dev.yaml 本地开发的端口覆盖层（部署时不用，见「本地开发」）
+samples/                体验用示例素材
 ```
