@@ -53,12 +53,15 @@ export function bindRules(rules: Rule[], task: DataTask) {
 }
 export default function RuleLibrary({
   store,
+  createdBy,
   onApply,
   onSave,
   onShare,
   notify,
 }: {
   store: Store;
+  /** 当前登录用户的昵称：保存为"我的规则"时记的创建人 */
+  createdBy: string;
   onApply: (
     task: DataTask,
     rules: Rule[],
@@ -98,7 +101,12 @@ export default function RuleLibrary({
   );
   const baseTask = store.tasks[0];
   function rulesFor(r: RuleDefinition | SavedRule | Template) {
-    return "operation" in r ? [makeRule(r, baseTask.fields)] : r.rules;
+    if (!("operation" in r)) return r.rules;
+    // 空白工作区（新账号）里还没有任何任务：系统规则的 DSL 预览无字段可绑，
+    // 返回空数组让详情弹窗照常渲染（JSON.stringify([]) 就是 "[]"）。
+    // 不能在这里 TypeError——点一下规则标题就把整个页面打崩是不可接受的。
+    if (!baseTask) return [];
+    return [makeRule(r, baseTask.fields)];
   }
   return (
     <div className="page rules-page">
@@ -393,13 +401,20 @@ export default function RuleLibrary({
               2,
             )}
           </pre>
-          <Notice>
-            应用到新任务时会匹配可用字段，请在工作台复核参数与影响范围。
-          </Notice>
+          {baseTask ? (
+            <Notice>
+              应用到新任务时会匹配可用字段，请在工作台复核参数与影响范围。
+            </Notice>
+          ) : (
+            <Notice warning>
+              当前工作区还没有数据任务，规则暂时无法预览 DSL 或添加到任务。先在"数据任务"里创建一个任务。
+            </Notice>
+          )}
           <div className="form-footer">
             {"operation" in detail && (
               <button
                 className="button"
+                disabled={!baseTask}
                 onClick={() => {
                   onSave({
                     id: crypto.randomUUID(),
@@ -408,7 +423,7 @@ export default function RuleLibrary({
                     scope: "我的清洗规则",
                     rules: rulesFor(detail),
                     fieldTypes: detail.tags,
-                    createdBy: "林晓",
+                    createdBy,
                     method: "系统复制",
                     createdAt: new Date().toISOString(),
                     uses: 0,
@@ -425,6 +440,7 @@ export default function RuleLibrary({
             )}
             <button
               className="button primary"
+              disabled={!baseTask}
               onClick={() => {
                 setApply({
                   rules: rulesFor(detail),
@@ -452,6 +468,13 @@ export default function RuleLibrary({
               : "规则会加入待执行方案，不会自动运行。"}
           </Notice>
           <div className="task-picker">
+            {!store.tasks.length && (
+              // 没有任务时这个弹窗本来会渲染成一个没有任何选项的空白对话框
+              <Empty
+                title="还没有数据任务"
+                description="先创建一个数据任务，规则才能添加进去。"
+              />
+            )}
             {store.tasks.map((t) => (
               <button
                 key={t.id}
@@ -527,7 +550,7 @@ export default function RuleLibrary({
                   scope: "我的清洗规则",
                   rules: [{ ...makeRule(def, task.fields), name: name.trim() }],
                   fieldTypes: def.tags,
-                  createdBy: "林晓",
+                  createdBy,
                   method: "手工创建",
                   createdAt: new Date().toISOString(),
                   uses: 0,

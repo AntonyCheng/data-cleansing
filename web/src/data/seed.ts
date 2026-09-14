@@ -82,10 +82,20 @@ export function makeTask(
     demo,
   };
 }
+/** 新账号的初始工作区：完全空白，不跑种子。
+ *  必须是"5 个空数组"而不是 {}——Store 里有几处不带兜底的直读
+ *  （App.tsx 的 savedRules / warehouses / templates），键缺了会直接 TypeError。
+ *  services 与 mediaTasks 有兜底，但一致性起见一并给上。 */
+export function createEmptyStore(): Store {
+  return { tasks: [], mediaTasks: [], savedRules: [], templates: [], warehouses: [] };
+}
+
 // 演示账号的初始工作区：全部为黑龙江省真实数据任务（见各数据文件顶部注释的来源说明）。
 // 「黑龙江省地市经济与人口指标」预执行清洗并入库、预配置好对外服务——部署开箱即有
-// “清洗完成 + 已入库 + 服务已生效”的完整状态可讲；其余 3 个保持待清洗，供现场演示完整流程。
-// sampleRows()（客户数据样例）只作为创建任务向导里的“使用样例”按钮数据，不再进种子。
+// "清洗完成 + 已入库 + 服务已生效"的完整状态可讲；其余 5 个保持待清洗，供现场演示完整流程。
+// sampleRows()（客户数据样例）只作为创建任务向导里的"使用样例"按钮数据，不再进种子。
+// 注意：这个种子只用于演示账号（bff/src/seedDemo.ts 直接落库的 demo-workspace.json 快照），
+// 新账号走的是上面的 createEmptyStore()——两者不要混。
 export function createSeed(): Store {
   const now = new Date().toISOString();
   const heilongjiang = makeTask(

@@ -1,7 +1,7 @@
 // AI 对话的大模型客户端。对话统一走 /api/ai/chat（SSE 流式）：模型先判断意图（数据问答 /
 // 选清洗规则 / 闲聊），回答文本以增量事件实时到达；选规则时只返回"规则目录 id + 参数覆盖"，
 // 具体校验和执行仍在前端（buildRuleMatch + validateRules）。
-import { authHeaders } from "./api";
+import { apiFetch, authHeaders } from "./api";
 import { makeRule, ruleCatalog } from "../data/rules";
 import { parseNumber } from "./engine";
 import type { Field, Rule } from "./types";
@@ -107,7 +107,7 @@ export async function chatWithAI(
   },
   handlers: ChatStreamHandlers = {},
 ): Promise<ChatResponse> {
-  const res = await fetch("/api/ai/chat", {
+  const res = await apiFetch("/api/ai/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(opts),

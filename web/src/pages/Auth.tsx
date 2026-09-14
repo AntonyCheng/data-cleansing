@@ -1,14 +1,21 @@
 import { useState } from "react";
-import { ArrowRight, Sparkles } from "lucide-react";
-import { login, register } from "../lib/api";
+import { Sparkles } from "lucide-react";
+import { login, type AuthUser } from "../lib/api";
 
-export default function Auth({ onAuthed }: { onAuthed: () => void }) {
-  const [mode, setMode] = useState<"login" | "register">("login");
+// 公开注册已关闭（后端 POST /api/auth/register 会返回 403），账号由管理员在「设置」里开通，
+// 所以这里只有登录，没有注册入口。
+export default function Auth({
+  onAuthed,
+  notice,
+}: {
+  onAuthed: (user: AuthUser) => void;
+  notice?: string;
+}) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [displayName, setDisplayName] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  // 初值取自外部提示（比如"登录状态已失效，请重新登录"）
+  const [error, setError] = useState(notice ?? "");
 
   async function submit() {
     setError("");
@@ -16,15 +23,9 @@ export default function Auth({ onAuthed }: { onAuthed: () => void }) {
       setError("请填写邮箱和密码。");
       return;
     }
-    if (mode === "register" && !displayName.trim()) {
-      setError("请填写昵称。");
-      return;
-    }
     setBusy(true);
     try {
-      if (mode === "login") await login(email.trim(), password);
-      else await register(email.trim(), password, displayName.trim());
-      onAuthed();
+      onAuthed(await login(email.trim(), password));
     } catch (e) {
       setError(e instanceof Error ? e.message : "操作失败，请重试。");
     } finally {
@@ -51,21 +52,8 @@ export default function Auth({ onAuthed }: { onAuthed: () => void }) {
             KData<small>STUDIO</small>
           </span>
         </a>
-        <h1>{mode === "login" ? "登录工作区" : "创建账号"}</h1>
-        <p className="auth-lede">
-          {mode === "login" ? "登录后继续你的数据任务、清洗规则和数据服务。" : "创建账号后会自动生成一个全新的工作区。"}
-        </p>
-        {mode === "register" && (
-          <label className="field">
-            昵称
-            <input
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="怎么称呼你"
-              autoComplete="nickname"
-            />
-          </label>
-        )}
+        <h1>登录工作区</h1>
+        <p className="auth-lede">登录后继续你的数据任务、清洗规则和数据服务。账号由管理员开通。</p>
         <label className="field">
           邮箱
           <input
@@ -82,8 +70,8 @@ export default function Auth({ onAuthed }: { onAuthed: () => void }) {
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            placeholder={mode === "register" ? "至少 6 位" : "••••••"}
-            autoComplete={mode === "login" ? "current-password" : "new-password"}
+            placeholder="••••••"
+            autoComplete="current-password"
             onKeyDown={(e) => {
               if (e.key === "Enter") void submit();
             }}
@@ -96,17 +84,7 @@ export default function Auth({ onAuthed }: { onAuthed: () => void }) {
         )}
         <button className="button primary auth-submit" disabled={busy} onClick={submit}>
           <Sparkles size={16} />
-          {busy ? "处理中…" : mode === "login" ? "登录" : "注册"}
-        </button>
-        <button
-          className="text-button auth-switch"
-          onClick={() => {
-            setMode((m) => (m === "login" ? "register" : "login"));
-            setError("");
-          }}
-        >
-          {mode === "login" ? "还没有账号？去注册" : "已有账号？去登录"}
-          <ArrowRight size={14} />
+          {busy ? "处理中…" : "登录"}
         </button>
       </div>
     </div>

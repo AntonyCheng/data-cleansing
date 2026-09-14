@@ -14,14 +14,25 @@ import {
   ListTodo,
   Menu,
   Plus,
+  // 别名是必须的：下面 import 的页面组件也叫 Settings
+  Settings as SettingsIcon,
   ShieldCheck,
   Sparkles,
   Trash2,
   X,
 } from "lucide-react";
-import { createSeed } from "./data/seed";
+import { createEmptyStore } from "./data/seed";
 import { useRemoteStore } from "./lib/useRemoteStore";
-import { clearSession, getToken, getUser, type AuthUser } from "./lib/api";
+import {
+  clearSession,
+  getToken,
+  getUser,
+  me,
+  saveUser,
+  setUnauthorizedHandler,
+  UnauthorizedError,
+  type AuthUser,
+} from "./lib/api";
 import type { DataTask, MediaTask, Rule, SheetView, Store } from "./lib/types";
 import type { MediaKind } from "./lib/media";
 import { download } from "./lib/engine";
@@ -31,6 +42,7 @@ import CreateTask from "./components/CreateTask";
 import Tasks from "./pages/Tasks";
 import RuleLibrary from "./pages/RuleLibrary";
 import DataServices from "./pages/DataServices";
+import Settings from "./pages/Settings";
 import Auth from "./pages/Auth";
 import { STATUS_GUIDE } from "./lib/status";
 import { saveDataService } from "./lib/services";
@@ -53,14 +65,121 @@ function currentRoute() {
   if (next !== route) history.replaceState(null, "", `#${next}`);
   return next;
 }
+// 会话三态：checking 只在"本地有 token"时出现，是一次真实的服务端校验，
+// 不是"未登录"——所以不能直接渲染 <Auth>，否则每次刷新都会闪一下登录页。
+type Session =
+  | { status: "checking" }
+  | { status: "anon"; notice?: string }
+  | { status: "authed"; user: AuthUser };
+
+/** 启动校验最多等这么久。后端不可达时，nginx 要等自己的 proxy_connect_timeout（15 秒）
+ *  才会返回 504，不能让人对着"正在校验登录状态…"干等——超时就按"拿不到服务端答复"处理，
+ *  用缓存的用户信息进工作区（真正的失败会在随后同步工作区时以"同步失败"提示出来）。 */
+const SESSION_CHECK_TIMEOUT_MS = 4000;
+
 export default function App() {
-  const [user, setUser] = useState<AuthUser | null>(() => (getToken() ? getUser() : null));
-  if (!user) return <Auth onAuthed={() => setUser(getUser())} />;
-  return <Workspace user={user} onLogout={() => { clearSession(); setUser(null); }} />;
+  const [session, setSession] = useState<Session>(() => (getToken() ? { status: "checking" } : { status: "anon" }));
+
+  // 统一登出通道：任何一路请求（含 WebSocket）发现 401 都会调到这里。
+  // 这是"token 失效自动回登录页、不再卡在同步失败"的全部实现——全应用只有这一处清会话。
+  // 必须声明在校验 effect 之前，保证校验返回前回调已就位。
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      clearSession();
+      setSession({ status: "anon", notice: "登录状态已失效，请重新登录。" });
+    });
+    return () => setUnauthorizedHandler(null);
+  }, []);
+
+  // 启动校验：localStorage 里的 token 可能早就过期、或被换过 JWT_SECRET 作废，问一次服务端才算数
+  useEffect(() => {
+    if (session.status !== "checking") return;
+    let cancelled = false;
+    const settle = (next: Session) => {
+      if (!cancelled) setSession(next);
+    };
+    // 网络不通 / 服务未启动 / 超过上面的闸门：用本地缓存的 user 继续进入工作区（离线容忍）。
+    // 不能因为一次网络抖动或后端重启就把人踢回登录页——真正的失败会在同步时以"同步失败"提示出来。
+    const fallback = () => {
+      const cached = getUser();
+      settle(cached ? { status: "authed", user: cached } : { status: "anon", notice: "无法连接服务端，请稍后重试。" });
+    };
+    const timer = setTimeout(fallback, SESSION_CHECK_TIMEOUT_MS);
+    me()
+      .then((u) => {
+        clearTimeout(timer);
+        saveUser(u); // 顺手刷新缓存的角色：绕过登录直接改库的角色在这里生效
+        settle({ status: "authed", user: u });
+      })
+      .catch((e: unknown) => {
+        clearTimeout(timer);
+        if (e instanceof UnauthorizedError) {
+          // 401：全局回调已经切成 anon，这里再兜一次，保证不会卡在 checking
+          clearSession();
+          settle({ status: "anon", notice: "登录状态已失效，请重新登录。" });
+          return;
+        }
+        fallback();
+      });
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [session.status]);
+
+  if (session.status === "checking") return <SessionChecking />;
+  if (session.status === "anon") {
+    return (
+      <Auth
+        notice={session.notice}
+        onAuthed={(user) => setSession({ status: "authed", user })}
+      />
+    );
+  }
+  return (
+    <Workspace
+      user={session.user}
+      onLogout={() => {
+        clearSession();
+        setSession({ status: "anon" });
+      }}
+    />
+  );
+}
+
+/** 启动校验的过渡态。只在本地有 token 时出现、通常几十毫秒，
+ *  复用登录页的样式（不新增 CSS），避免"校验中"被误认成"已登出"。 */
+function SessionChecking() {
+  return (
+    <div className="auth-page">
+      <div className="auth-card">
+        <span className="brand">
+          <span className="brand-mark">
+            <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
+              <path
+                d="M8 7v18M24 7L13 16l11 9M13 11v10"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </span>
+          <span>
+            KData<small>STUDIO</small>
+          </span>
+        </span>
+        <h1>正在校验登录状态…</h1>
+        <p className="auth-lede">马上就好。</p>
+      </div>
+    </div>
+  );
 }
 
 function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void }) {
-  const [store, setStore, storageError] = useRemoteStore<Store>(createSeed);
+  // 服务端 data 为 null（新账号）时用空白工作区起步并立刻回写——不再灌演示种子。
+  // useRemoteStore 的契约没变，hook 和后端都不用动；演示账号的 data 非 null，不受影响。
+  const [store, setStore, storageError] = useRemoteStore<Store>(createEmptyStore);
   const [route, setRoute] = useState(currentRoute);
   const [navOpen, setNavOpen] = useState(false);
   const [create, setCreate] = useState<{
@@ -105,11 +224,17 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
       parts[0] === "media"
         ? mediaTasks.find((t) => t.id === parts[1])
         : undefined;
+  // 设置页不在 navigation 里（它只对管理员可见，塞进 navigation 会连带出现在
+  // 侧边栏主导航和 Cmd+K 搜索里），所以单独认一下——否则 section 会退化成 "tasks"，
+  // 侧边栏高亮会在设置页上亮着"数据任务"。
   const section = selected || selectedMedia
     ? "tasks"
     : navigation.some((n) => n.id === parts[0])
       ? parts[0]
-      : "tasks";
+      : parts[0] === "settings"
+        ? "settings"
+        : "tasks";
+  const canManage = user.role === "admin";
   const go = (path: string) => {
     location.hash = path;
     setNavOpen(false);
@@ -321,6 +446,18 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
             使用指南
             <ArrowRight size={13} />
           </button>
+          {canManage && (
+            // 仅管理员可见。刻意不进 navigation——那份配置同时驱动侧边栏主导航和
+            // Cmd+K 搜索，不进它就自动满足"只有管理员能看到"，也不用给搜索做权限过滤。
+            <button
+              className={`sidebar-help${section === "settings" ? " active" : ""}`}
+              onClick={() => go("settings")}
+            >
+              <SettingsIcon size={17} />
+              设置
+              <ArrowRight size={13} />
+            </button>
+          )}
           <div className="user-card">
             <span>{user.displayName.slice(0, 1)}</span>
             <div>
@@ -414,6 +551,7 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
           ) : section === "rules" ? (
             <RuleLibrary
               store={store}
+              createdBy={user.displayName}
               onApply={(task, rules, id, template) => {
                 setStore((s) => ({
                   ...s,
@@ -470,6 +608,26 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
               }
               notify={setToast}
             />
+          ) : section === "settings" ? (
+            canManage ? (
+              <Settings currentUser={user} notify={setToast} />
+            ) : (
+              // 非管理员直接敲 #settings：给一个明确的"无权访问"页。
+              // 不做重定向是因为渲染期改 hash 会闪，而且说清楚比悄悄弹回更诚实。
+              // 真正的闸门是服务端的 requireAdmin（这里点进去也拿不到任何数据）。
+              <div className="page">
+                <Empty
+                  title="需要管理员权限"
+                  description="「设置」只对管理员开放。请联系管理员开通账号，或回到数据任务继续工作。"
+                  action={
+                    <button className="button primary" onClick={() => go("tasks")}>
+                      返回数据任务
+                      <ArrowRight size={14} />
+                    </button>
+                  }
+                />
+              </div>
+            )
           ) : (
             <DataServices
               store={store}

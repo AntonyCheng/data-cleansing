@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { appendFile, mkdir } from "node:fs/promises";
 import http from "node:http";
 import { dirname, join } from "node:path";
@@ -7,8 +6,9 @@ import cors from "cors";
 import express from "express";
 import multer from "multer";
 import { WebSocket, WebSocketServer } from "ws";
-import { hashPassword, requireAuth, signToken, verifyPassword, verifyToken } from "./auth.js";
-import { assertLiveConfig, config } from "./config.js";
+import { requireAdmin, requireAuth, signToken, verifyPassword, verifyToken } from "./auth.js";
+import { assertAuthConfig, assertLiveConfig, config } from "./config.js";
+import adminRouter from "./routes/admin.js";
 import aiRouter from "./routes/ai.js";
 import connectorsRouter from "./routes/connectors.js";
 import dataServicesRouter from "./routes/dataServices.js";
@@ -26,6 +26,10 @@ import type { TaskStreamMsg, TaskType } from "./types.js";
 process.on("unhandledRejection", (reason) => {
   console.error("[bff] 未捕获的 Promise rejection（已拦截，进程继续跑）:", reason);
 });
+
+// 配置错了就立刻死在启动阶段，不留一个"能起来但登录态不可信"的半残进程。
+// 放在建 app / 连库之前，且只在进程入口调用——迁移等脚本不 import 本文件，不受影响。
+assertAuthConfig();
 
 const app = express();
 app.use(cors({ origin: config.webOrigin }));
@@ -70,28 +74,14 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
-// ---- 鉴权：邮箱 + 密码 + JWT（P0 地基，不做找回密码/第三方登录）----
+// ---- 鉴权：邮箱 + 密码 + JWT（不做找回密码/第三方登录）----
 
-app.post("/api/auth/register", async (req, res, next) => {
-  try {
-    const { email, password, displayName } = req.body as { email?: string; password?: string; displayName?: string };
-    if (!email || !password || !displayName)
-      throw Object.assign(new Error("请填写邮箱、密码和昵称"), { code: "BAD_REQUEST", status: 400 });
-    if (password.length < 6)
-      throw Object.assign(new Error("密码至少 6 位"), { code: "BAD_REQUEST", status: 400 });
-    const existing = await db.selectFrom("users").select("id").where("email", "=", email).executeTakeFirst();
-    if (existing) throw Object.assign(new Error("该邮箱已注册"), { code: "EMAIL_TAKEN", status: 409 });
-    const id = randomUUID();
-    await db
-      .insertInto("users")
-      .values({ id, email, password_hash: await hashPassword(password), display_name: displayName })
-      .execute();
-    // 新账号先插一行空工作区（data: null），前端拿到 null 就用本地种子数据初始化
-    await db.insertInto("workspaces").values({ user_id: id, data: null }).execute();
-    res.status(201).json({ token: signToken(id), user: { id, email, displayName } });
-  } catch (e) {
-    next(e);
-  }
+// 公开注册已关闭：平台改成管理员建号（见 routes/admin.ts）。
+// 这里保留路由并返回 403 而不是直接删掉——老前端 bundle 还留在用户浏览器里的话，
+// 会看到一句能读懂的中文提示，而不是一个 404。必须是 403 不是 401：
+// 401 会被前端的自动登出逻辑当成"登录态失效"。
+app.post("/api/auth/register", (_req, res, next) => {
+  next(Object.assign(new Error("注册已关闭，请联系管理员开通账号"), { code: "REGISTRATION_CLOSED", status: 403 }));
 });
 
 app.post("/api/auth/login", async (req, res, next) => {
@@ -100,9 +90,14 @@ app.post("/api/auth/login", async (req, res, next) => {
     if (!email || !password)
       throw Object.assign(new Error("请填写邮箱和密码"), { code: "BAD_REQUEST", status: 400 });
     const user = await db.selectFrom("users").selectAll().where("email", "=", email).executeTakeFirst();
+    // 注意这行的 401 与 requireAuth 的 401 语义不同：这里是"密码不对"，不是"登录态失效"。
+    // 所以前端把 login() 排除在 401 自动登出之外（见 web/src/lib/api.ts 的说明）。
     if (!user || !(await verifyPassword(password, user.password_hash)))
       throw Object.assign(new Error("邮箱或密码不正确"), { code: "INVALID_CREDENTIALS", status: 401 });
-    res.json({ token: signToken(user.id), user: { id: user.id, email: user.email, displayName: user.display_name } });
+    res.json({
+      token: signToken(user.id),
+      user: { id: user.id, email: user.email, displayName: user.display_name, role: user.role },
+    });
   } catch (e) {
     next(e);
   }
@@ -112,11 +107,12 @@ app.get("/api/auth/me", requireAuth, async (req, res, next) => {
   try {
     const user = await db
       .selectFrom("users")
-      .select(["id", "email", "display_name"])
+      .select(["id", "email", "display_name", "role"])
       .where("id", "=", req.userId!)
       .executeTakeFirst();
     if (!user) throw Object.assign(new Error("账号不存在"), { code: "NOT_FOUND", status: 404 });
-    res.json({ id: user.id, email: user.email, displayName: user.display_name });
+    // role 必须返回：前端侧边栏的「设置」入口靠它决定是否显示
+    res.json({ id: user.id, email: user.email, displayName: user.display_name, role: user.role });
   } catch (e) {
     next(e);
   }
@@ -163,6 +159,9 @@ app.use("/api/ai", requireAuth, aiRouter);
 
 // ---- 「URL / 网页」数据来源：服务端真实抓取网页并解析静态表格 ----
 app.use("/api/page", requireAuth, pageFetchRouter);
+
+// ---- 管理后台（用户管理）：公开注册已关闭，建号只能走这里，全部接口要求管理员身份 ----
+app.use("/api/admin", requireAuth, requireAdmin, adminRouter);
 
 // ---- 后台任务槽：每用户每类型最多一个在跑，与浏览器连接生命周期解耦 ----
 

@@ -6464,3 +6464,59 @@ code {
   font-weight: 600;
   background: #f7f9f8;
 }
+
+/* ---- 设置页（#settings，仅管理员可见）---- */
+
+/* 侧边栏「设置」按钮选中态，配色与 .sidebar nav a.active 保持一致 */
+.sidebar-help.active {
+  background: #eaf4ed;
+  color: #317e56;
+  font-weight: 550;
+  border-radius: 7px;
+}
+
+/* 角色列可能同时挂多个徽标（管理员 / 演示账号 / 当前账号），给一点间隔 */
+.settings-page td .badge + .badge {
+  margin-left: 5px;
+}
+
+/* 行内操作：常显而不是悬停才出现——管理员进这一页就是来找这两个按钮的 */
+.settings-page .row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.settings-page .row-actions .text-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.settings-page .row-actions .text-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.settings-page .row-delete {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border: 0;
+  background: none;
+  color: #b3bfae;
+  padding: 7px 6px;
+  border-radius: 5px;
+  font-size: 11px;
+}
+.settings-page .row-delete:hover:not(:disabled),
+.settings-page .row-delete.confirming {
+  color: var(--red);
+  background: #f7ebe9;
+}
+.settings-page .row-delete.confirming {
+  font-size: 10px;
+}
+.settings-page .row-delete:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}

@@ -2,12 +2,20 @@ import { Kysely, PostgresDialect, type Generated } from "kysely";
 import pg from "pg";
 import { config } from "./config.js";
 
+/** 账号角色。DB 里存 text、TS 用联合类型，沿用 connectors.kind 的既有范式（不加 CHECK 约束）。
+ *  安全前提：判断一律用等值比较 `!== "admin"`（见 auth.ts:requireAdmin）——
+ *  这样任何脏值都只会退化成普通用户，不会提权。若将来改成 role === "Admin" 这类模糊匹配，这个前提就没了。 */
+export type UserRole = "admin" | "user";
+
 export interface UsersTable {
   // id 由应用层用 crypto.randomUUID() 生成后插入，不依赖 pgcrypto/uuid-ossp 扩展
   id: string;
   email: string;
   password_hash: string;
   display_name: string;
+  // 带 DB 默认值 'user'，所以现有的两处 insert（注册、seedDemo）都不用显式传；
+  // select 出来一定是 UserRole（非 undefined），requireAdmin 可直接用
+  role: Generated<UserRole>;
   created_at: Generated<Date>;
 }
 

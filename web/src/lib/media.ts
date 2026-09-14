@@ -1,7 +1,7 @@
 // 图片 / 音频 / 视频清洗的数据契约与 bff 客户端。
 // 与 bff/src/types.ts 保持同步；移植自 web/src/types.ts + web/src/api.ts。
 
-import { authHeaders, getToken } from "./api";
+import { apiFetch, authHeaders, getToken, jsonOrThrow, notifyUnauthorized } from "./api";
 
 export type MediaKind = "image" | "audio" | "video";
 export type JobStatus = "running" | "done" | "error";
@@ -91,16 +91,8 @@ export type TaskStreamMsg =
   | { kind: "error"; data: { code: string; message: string } }
   | { kind: "done" };
 
-async function jsonOrThrow<T>(res: Response): Promise<T> {
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const err = (body as { error?: { message?: string } }).error;
-    throw new Error(err?.message ?? `请求失败 (${res.status})`);
-  }
-  return body as T;
-}
-
 export async function getMediaHealth(): Promise<{ ok: boolean; mode: string; missing_live_config: string[] }> {
+  // 用原生 fetch：/api/health 是公开接口、不带登录态，没有"身份失效"可言
   return jsonOrThrow(await fetch("/api/health"));
 }
 
@@ -114,7 +106,7 @@ export function startMediaTask(
   const fd = new FormData();
   fd.append("file", file);
   if (opts?.frameIntervalMs) fd.append("frame_interval_ms", String(opts.frameIntervalMs));
-  return fetch(`/api/task/${kind}/start`, { method: "POST", headers: authHeaders(), body: fd }).then(
+  return apiFetch(`/api/task/${kind}/start`, { method: "POST", headers: authHeaders(), body: fd }).then(
     jsonOrThrow<{ taskId: string }>,
   );
 }
@@ -123,7 +115,7 @@ export function startMediaTask(
 export async function peekMediaTask(
   kind: MediaKind,
 ): Promise<{ hasJob: boolean; status?: JobStatus; filename?: string }> {
-  return jsonOrThrow(await fetch(`/api/task/${kind}/peek`, { headers: authHeaders() }));
+  return jsonOrThrow(await apiFetch(`/api/task/${kind}/peek`, { headers: authHeaders() }));
 }
 
 /** 接上某类型的任务流：连上先回放历史消息，还在跑的话继续实时收新消息。
@@ -131,7 +123,20 @@ export async function peekMediaTask(
 export function openMediaTaskStream(kind: MediaKind): WebSocket {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const token = encodeURIComponent(getToken() ?? "");
-  return new WebSocket(`${proto}://${location.host}/api/task/stream?type=${kind}&token=${token}`);
+  const ws = new WebSocket(`${proto}://${location.host}/api/task/stream?type=${kind}&token=${token}`);
+  // token 失效时服务端发一帧 {kind:"error",data:{code:"UNAUTHORIZED"}} 就关连接。
+  // 调用方（MediaWorkbench）会用 ws.onmessage 接管消息、把处理器整体覆盖掉，
+  // 所以这里用 addEventListener 旁听（两者共存），把 WebSocket 这一路也接进统一的自动登出——
+  // 否则用户只会看到"实时连接异常"，而不知道要重新登录。
+  ws.addEventListener("message", (ev) => {
+    try {
+      const msg = JSON.parse(String(ev.data)) as { kind?: string; data?: { code?: string } };
+      if (msg.kind === "error" && msg.data?.code === "UNAUTHORIZED") notifyUnauthorized();
+    } catch {
+      /* 非 JSON 帧忽略 */
+    }
+  });
+  return ws;
 }
 
 export function toSrt(lines: { start_ms: number; end_ms: number; text: string }[]): string {

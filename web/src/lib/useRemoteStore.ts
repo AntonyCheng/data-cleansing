@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { getWorkspace, putWorkspace } from "./api";
+import { getWorkspace, putWorkspace, UnauthorizedError } from "./api";
 
 /** 与旧版 useStored<T> 签名完全一致，内部把存储后端从 localStorage 换成 bff 的 /api/workspace。
  *  挂载时拉一次远端数据（没有就用种子初始化），之后每次变化防抖 800ms 整坨 PUT 回去——
@@ -26,8 +26,15 @@ export function useRemoteStore<T>(initial: () => T) {
         }
         setLoaded(true);
       })
-      .catch(() => {
+      .catch((e: unknown) => {
         if (cancelled) return;
+        // 401 说明登录态已失效，全局登出流程正在切回登录页——这时再显示"同步失败"是误导。
+        // 仍置 loaded，让状态机保持自洽（skipNextWrite 初值为 true，不会触发回写）。
+        if (e instanceof UnauthorizedError) {
+          setLoaded(true);
+          return;
+        }
+        // 网络不通 / 5xx：保留登录态，按原来的"暂时只存在本页"提示
         setError(true);
         setLoaded(true);
       });
@@ -47,7 +54,8 @@ export function useRemoteStore<T>(initial: () => T) {
     timerRef.current = setTimeout(() => {
       putWorkspace(value)
         .then(() => setError(false))
-        .catch(() => setError(true));
+        // 401 已经走全局登出（apiFetch 通知），不再叠加"同步失败"横幅
+        .catch((e: unknown) => setError(!(e instanceof UnauthorizedError)));
     }, 800);
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);

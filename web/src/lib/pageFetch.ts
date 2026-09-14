@@ -1,5 +1,5 @@
 // 「URL / 网页」来源客户端：让 bff 服务端真实抓取网页并解析静态表格。
-import { authHeaders } from "./api";
+import { apiFetch, authHeaders } from "./api";
 
 export interface ParsedPage {
   title: string;
@@ -9,7 +9,7 @@ export interface ParsedPage {
 }
 
 export async function parsePage(url: string): Promise<ParsedPage> {
-  const res = await fetch("/api/page/parse", {
+  const res = await apiFetch("/api/page/parse", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ url }),

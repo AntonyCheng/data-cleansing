@@ -56,6 +56,20 @@ const migrations: Record<string, Migration> = {
       await db.schema.dropTable("connectors").execute();
     },
   },
+  // P2：账号角色。平台从"谁都能注册"改成"管理员建号"（见 routes/admin.ts），
+  // 需要一个角色位区分管理员与普通用户。ADD COLUMN ... NOT NULL DEFAULT 'user'
+  // 在 PG 11+ 是元数据级操作，已有行自动读作 'user'，不需要额外的回填 UPDATE。
+  "004_user_role": {
+    async up(db) {
+      await db.schema
+        .alterTable("users")
+        .addColumn("role", "text", (col) => col.notNull().defaultTo("user"))
+        .execute();
+    },
+    async down(db) {
+      await db.schema.alterTable("users").dropColumn("role").execute();
+    },
+  },
 };
 
 const provider: MigrationProvider = {
