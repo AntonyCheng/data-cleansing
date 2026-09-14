@@ -26,19 +26,34 @@ cp .env.example .env   # 按提示填写图片/音频/视频清洗所需的火�
 docker compose up -d --build
 ```
 
-打开 <http://localhost:8080>，注册账号即可使用。`samples/` 目录下提供了图片 / 音频 / 视频三个示例文件；表格清洗登录后自带内置样例数据（含黑龙江省 13 个地市真实经济与人口数据，见下），数据库连接器可以直接连 `demo-db`（内置的演示数据源，见下）体验真实连接抓取。
+打开 <http://localhost:8080>，注册账号即可使用。`samples/` 目录下提供了图片 / 音频 / 视频三个示例文件；表格清洗登录后自带 6 个黑龙江省真实数据任务（「黑龙江省地市经济与人口指标」已预清洗、入库并配置好对外服务，其余 5 个保持待清洗供现场演示，见下），数据库连接器可以直接连 `demo-db`（内置的演示数据源，见下）体验真实连接抓取。
 
 未填写火山引擎密钥时，图片/音频/视频入口会提示服务不可用，但表格数据清洗和数据库/API 连接器不受影响。
 
-## 演示数据源 demo-db
+## 演示数据源 demo-db / demo-api
 
-`docker-compose.yaml` 里的 `demo-db` 是一个独立于应用自身数据库的 PostgreSQL 容器，启动时自动灌入黑龙江省 13 个地市的真实经济与人口数据（来源见 `demo-data/heilongjiang-init.sql` 顶部注释：《黑龙江统计年鉴－2025》+《2020年黑龙江省第七次全国人口普查主要数据公报》），专门用来演示"数据库"连接器——不是编造的样例，是真实可核实的公开数据。
+`docker-compose.yaml` 里有两个独立的演示数据源容器，数据全部来自权威公开发布（不是编造的样例，来源见文件顶部注释）：
 
-在"创建数据任务 → 数据库"里新建连接：
-- 整套用 `docker compose up` 启动时：host 填 `demo-db`，端口 `5432`
-- 本机直接 `npm run dev` 调试 bff（不进容器）时：host 填 `localhost`，端口 `5434`
+**demo-db**（PostgreSQL）：启动时自动灌入黑龙江省 5 张表——
 
-数据库名 `heilongjiang`，用户名 `demo`，密码见 `.env` 里的 `DEMO_DB_PASSWORD`（默认 `demo12345`）。
+| 表 | 内容 |
+|---|---|
+| `heilongjiang_cities` | 13 地市经济指标（2024，统计年鉴2025）+ 人口指标（2020 七普） |
+| `hlj_gdp_2025` | 13 地市 2025 年 GDP 与增速（各地市 2025 年统计公报） |
+| `hlj_grain_2024` | 13 地市 2024 年粮食产量与播种面积（各地市公报 + 新华社） |
+| `hlj_tourism` | 哈尔滨近三个冰雪季游客量与花费（哈尔滨市文广旅局） |
+| `hlj_scenic_spots` | 全省 438 家 A 级旅游景区（省文旅厅《2023年全省A级旅游景区名录》） |
+
+在"创建数据任务 → 数据库"里新建连接：整套 `docker compose up` 启动时 host 填 `demo-db`、端口 `5432`；本机 `npm run dev` 调试 bff 时 host 填 `localhost`、端口 `5434`。数据库名 `heilongjiang`，用户名 `demo`，密码见 `.env` 的 `DEMO_DB_PASSWORD`。
+
+**demo-api**（零依赖 Node 服务）：演示"API 连接器"的 API Key 鉴权与翻页抓取——
+
+- `GET /api/trade`：黑龙江省货物贸易年度序列（2021-2024，哈尔滨海关）
+- `GET /api/oilfield`：大庆油田年度生产序列（2022-2024，新华网/国资委）
+- `GET /page/bulletin.html`：免鉴权的"公报摘要"演示网页，供"URL / 网页"来源演示服务端真实抓取 + 表格解析
+- 连接器配置：鉴权方式 API Key，请求头名 `X-Api-Key`，值见 `.env` 的 `DEMO_API_KEY`（默认 `hlj-demo-2026`）；地址同理，容器网内 `http://demo-api:8090`，本机调试 `http://localhost:8090`
+
+数据修改方式：改 `web/src/data/heilongjiang.ts` / `hlj2025.ts` / `hljScenic.ts`（唯一数据真源），然后 `npx tsx demo-data/generate.mts` 重新生成 SQL 与 API 数据。
 
 ## 本地开发（不使用 Docker）
 

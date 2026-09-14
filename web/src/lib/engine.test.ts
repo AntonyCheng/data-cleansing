@@ -7,6 +7,7 @@ import {
   normalizePhone,
   parseInstruction,
   parseNumber,
+  recommend,
   csv,
 } from "./engine";
 import { makeRule, ruleCatalog } from "../data/rules";
@@ -37,13 +38,14 @@ describe("data parsing and transformations", () => {
     expect(parseNumber("未知")).toBeNull();
   });
   it("keeps originals unchanged and accounts for every row across outputs", () => {
-    const seed = createSeed(),
-      task = seed.tasks[0],
-      original = JSON.stringify(task.raw),
-      run = execute(task.raw, task.fields, task.plan);
-    expect(JSON.stringify(task.raw)).toBe(original);
+    // 客户样例（sampleRows）不再进种子任务，但仍是创建任务向导的样例数据，这条用它验证执行会计
+    const input = sampleRows(),
+      original = JSON.stringify(input),
+      fields = inferFields(input),
+      run = execute(input, fields, recommend(input, fields));
+    expect(JSON.stringify(input)).toBe(original);
     expect(run.rows.length + run.deleted.length + run.exceptions.length).toBe(
-      task.raw.length,
+      input.length,
     );
     expect(run.deleted).toHaveLength(2);
     expect(run.exceptions).toHaveLength(2);
@@ -199,7 +201,8 @@ describe("additional cleaning boundaries", () => {
 describe("local warehouse confirmation", () => {
   it("creates, appends, replaces and upserts only validated results", () => {
     let store = createSeed();
-    const task = store.tasks[1];
+    const task = store.tasks.find((t) => t.runs.length > 0)!;
+    const n = task.runs[0].rows.length;
     const mappings = Object.fromEntries(
       task.fields.map((f, i) => [f.key, "c" + i]),
     );
@@ -209,27 +212,27 @@ describe("local warehouse confirmation", () => {
     const d: Destination = {
       connection: "demo",
       database: "standard",
-      table: "orders",
+      table: "hlj_cities_clean",
       mode: "新建表",
-      primaryKey: "order_id",
+      primaryKey: task.fields[0].key,
       mappings,
       types,
     };
     store = commit(store, task, d);
-    expect(store.warehouses.at(-1)?.rows).toHaveLength(24);
+    expect(store.warehouses.at(-1)?.rows).toHaveLength(n);
     expect(() => checkDestination(d, task.runs[0], store.warehouses)).toThrow(
       "已存在",
     );
     store = commit(store, task, { ...d, mode: "追加数据" });
-    expect(store.warehouses.at(-1)?.rows).toHaveLength(48);
+    expect(store.warehouses.at(-1)?.rows).toHaveLength(n * 2);
     store = commit(store, task, { ...d, mode: "覆盖表" });
-    expect(store.warehouses.at(-1)?.rows).toHaveLength(24);
+    expect(store.warehouses.at(-1)?.rows).toHaveLength(n);
     store = commit(store, task, { ...d, mode: "增量更新" });
-    expect(store.warehouses.at(-1)?.rows).toHaveLength(24);
+    expect(store.warehouses.at(-1)?.rows).toHaveLength(n);
   });
   it("does not allow unsafe identifiers or duplicate mapped columns", () => {
     const store = createSeed(),
-      task = store.tasks[1];
+      task = store.tasks.find((t) => t.runs.length > 0)!;
     const d: Destination = {
       connection: "demo",
       database: "standard",

@@ -20,6 +20,7 @@ import { makeTask, sampleRows } from "../data/seed";
 import { Badge, Notice } from "./UI";
 import { MEDIA_KIND_LABEL, startMediaTask, type MediaKind } from "../lib/media";
 import ConnectorSource from "./ConnectorSource";
+import { parsePage, type ParsedPage } from "../lib/pageFetch";
 export const sourceOptions = [
   {
     name: "Excel / CSV",
@@ -65,7 +66,8 @@ export default function CreateTask({
   const [file, setFile] = useState("");
   const [rows, setRows] = useState<DataRow[]>([]);
   const [address, setAddress] = useState("");
-  const [schedule, setSchedule] = useState("手动触发");
+  const [pageResult, setPageResult] = useState<ParsedPage | null>(null);
+  const [picked, setPicked] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [parsed, setParsed] = useState<DataTask | null>(null);
@@ -91,6 +93,61 @@ export default function CreateTask({
       onCreateMedia(mediaKind, taskId, name.trim() || mediaFile.name, mediaFile.name);
     } catch (e) {
       setError(e instanceof Error ? e.message : "提交失败，请检查服务是否可用。");
+    } finally {
+      setBusy(false);
+    }
+  }
+  // 把网页里解析出的二维表转成 DataRow：优先用"非空单元格最多"的那一行当表头
+  // （与 CSV 解析同一套逻辑）；找不到合法表头就自动命名 列1..N，整表按数据处理。
+  function rowsFromMatrix(matrix: string[][]): DataRow[] {
+    const trimmed = matrix.filter((r) => r.some((v) => v.trim()));
+    const maxCols = Math.max(
+      ...trimmed.slice(0, 10).map((r) => r.filter((v) => v.trim()).length),
+    );
+    const headerIndex = trimmed
+      .slice(0, 10)
+      .findIndex((r) => r.filter((v) => v.trim()).length === maxCols);
+    const headers = (trimmed[headerIndex] || []).map((v) => v.trim());
+    const headerOk =
+      headers.length &&
+      headers.every((v) => v) &&
+      new Set(headers).size === headers.length;
+    const bodyStart = headerOk ? headerIndex + 1 : 0;
+    const finalHeaders = headerOk
+      ? headers
+      : Array.from(
+          { length: Math.max(...trimmed.map((r) => r.length)) },
+          (_, i) => `列${i + 1}`,
+        );
+    return trimmed.slice(bodyStart).map((row, i) => ({
+      id: `page-${i}`,
+      values: Object.fromEntries(
+        finalHeaders.map((key, j) => [key, row[j]?.trim() || null]),
+      ),
+    }));
+  }
+  async function fetchPage() {
+    setError("");
+    setPageResult(null);
+    if (!address.trim()) {
+      setError("请填写网页地址。");
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await parsePage(address.trim());
+      // 默认选中数据量最大的表
+      setPicked(
+        result.tables.indexOf(
+          [...result.tables].sort(
+            (a, b) => b.rows.length * b.rows[0].length - a.rows.length * a.rows[0].length,
+          )[0],
+        ),
+      );
+      setPageResult(result);
+      if (!name.trim()) setName(`${result.title.slice(0, 24)}数据整理`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "抓取失败，请检查地址。");
     } finally {
       setBusy(false);
     }
@@ -172,16 +229,24 @@ export default function CreateTask({
       setError("请先选择数据文件，或使用样例数据。");
       return;
     }
+    let urlDataRows: DataRow[] = [];
     if (type === "URL / 网页") {
       if (!address.trim()) {
         setError("请填写数据源地址。");
         return;
       }
-      try {
-        const u = new URL(address);
-        if (!["http:", "https:"].includes(u.protocol)) throw new Error();
-      } catch {
-        setError("请填写有效的 HTTP / HTTPS 地址。");
+      if (!pageResult) {
+        setError("请先点击「抓取网页」解析页面表格。");
+        return;
+      }
+      const matrix = pageResult.tables[picked]?.rows ?? [];
+      urlDataRows = rowsFromMatrix(matrix);
+      if (!urlDataRows.length) {
+        setError("选中的表格没有数据行，换一张表试试。");
+        return;
+      }
+      if (urlDataRows.length > 10000) {
+        setError("本地演示最多支持 10,000 行，请缩小表格范围。");
         return;
       }
     }
@@ -192,8 +257,8 @@ export default function CreateTask({
           name.trim(),
           type === "Excel / CSV" ? file : address,
           type === "Excel / CSV" ? (file.endsWith(".csv") ? "CSV" : "Excel") : "URL",
-          type === "Excel / CSV" ? rows : sampleRows(),
-          type !== "Excel / CSV" || file === "客户数据样例.xlsx",
+          type === "Excel / CSV" ? rows : type === "URL / 网页" ? urlDataRows : sampleRows(),
+          type === "Excel / CSV" && file === "客户数据样例.xlsx",
         ),
       );
       setBusy(false);
@@ -316,28 +381,70 @@ export default function CreateTask({
           ) : (
             <>
               <label className="field">
-                同步方式
-                <select
-                  value={schedule}
-                  onChange={(e) => setSchedule(e.target.value)}
-                >
-                  <option>手动触发</option>
-                  <option>每天 09:00</option>
-                  <option>每小时</option>
-                  <option>增量同步</option>
-                </select>
-              </label>
-              <label className="field">
                 网页 URL
-                <input
-                  value={address}
-                  onChange={(e) => setAddress(e.target.value)}
-                  placeholder="https://example.com/data"
-                />
+                <div className="url-fetch-row">
+                  <input
+                    value={address}
+                    onChange={(e) => setAddress(e.target.value)}
+                    placeholder="https://example.com/data"
+                  />
+                  <button
+                    type="button"
+                    className="button"
+                    disabled={busy || !address.trim()}
+                    onClick={fetchPage}
+                  >
+                    <Globe2 size={15} />
+                    {busy ? "抓取中…" : "抓取网页"}
+                  </button>
+                </div>
+                <small>服务端真实抓取页面并解析静态表格，无需登录、不含脚本渲染内容的页面。</small>
               </label>
-              <Notice>
-                前端演示会保存配置，并使用客户样例演示后续流程；不会连接远程数据源。
-              </Notice>
+              <button
+                className="sample-link"
+                onClick={() => {
+                  setAddress("http://demo-api:8090/page/bulletin.html");
+                  setError("");
+                }}
+              >
+                演示页：黑龙江省公报摘要（compose 部署时可直接抓取）
+                <ArrowRight size={14} />
+              </button>
+              {pageResult && (
+                <>
+                  <div className="page-tables">
+                    {pageResult.tables.map((t, i) => (
+                      <label key={i} className={i === picked ? "picked" : ""}>
+                        <input
+                          type="radio"
+                          name="page-table"
+                          checked={i === picked}
+                          onChange={() => setPicked(i)}
+                        />
+                        <span>
+                          表格 {i + 1} · {t.rows.length} 行 × {t.rows[0].length} 列
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                  <div className="table-scroll page-preview">
+                    <table>
+                      <tbody>
+                        {pageResult.tables[picked].rows.slice(0, 6).map((row, ri) => (
+                          <tr key={ri}>
+                            {row.map((cell, ci) => (
+                              <td key={ci}>{cell || "—"}</td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <Notice>
+                    已从「{pageResult.title}」解析出 {pageResult.tables.length} 张表格；确认后把选中的表格导入清洗流程。
+                  </Notice>
+                </>
+              )}
             </>
           )}
           <label className="field">
@@ -439,7 +546,7 @@ export default function CreateTask({
                 onCreate({
                   ...parsed,
                   sourceSchedule:
-                    type === "Excel / CSV" ? "手动上传" : schedule,
+                    type === "Excel / CSV" ? "手动上传" : "手动触发",
                 })
               }
             >

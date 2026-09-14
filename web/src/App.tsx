@@ -16,6 +16,7 @@ import {
   Plus,
   ShieldCheck,
   Sparkles,
+  Trash2,
   X,
 } from "lucide-react";
 import { createSeed } from "./data/seed";
@@ -127,6 +128,31 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
       ...s,
       mediaTasks: (s.mediaTasks ?? []).map((t) => (t.id === task.id ? task : t)),
     }));
+  }
+  // 侧边栏删除任务：两步确认（第一次点变成"确认"，再点一次才删），避免演示现场误触
+  const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
+  useEffect(() => {
+    if (!confirmingDelete) return;
+    const id = setTimeout(() => setConfirmingDelete(null), 3000);
+    return () => clearTimeout(id);
+  }, [confirmingDelete]);
+  function deleteTask(id: string) {
+    // 连带清掉指向该任务的服务配置和入库记录，不留孤儿数据
+    setStore((s) => ({
+      ...s,
+      tasks: s.tasks.filter((t) => t.id !== id),
+      services: (s.services ?? []).filter((svc) => svc.taskId !== id),
+      warehouses: (s.warehouses ?? []).filter((w) => w.taskId !== id),
+    }));
+    if (selected?.id === id) go("tasks");
+    setConfirmingDelete(null);
+    setToast("任务已删除");
+  }
+  function deleteMediaTask(id: string) {
+    setStore((s) => ({ ...s, mediaTasks: (s.mediaTasks ?? []).filter((t) => t.id !== id) }));
+    if (selectedMedia?.id === id) go("tasks");
+    setConfirmingDelete(null);
+    setToast("任务已删除");
   }
   function createMediaTask(kind: MediaKind, taskId: string, name: string, filename: string) {
     const record: MediaTask = {
@@ -250,16 +276,33 @@ function Workspace({ user, onLogout }: { user: AuthUser; onLogout: () => void })
             .map((t) => {
               const isSelected = t.media ? selectedMedia?.id === t.id : selected?.id === t.id;
               const Icon = t.media ? MEDIA_KIND_ICON[t.kind] : FileSpreadsheet;
+              const confirming = confirmingDelete === t.id;
               return (
-                <button
-                  key={(t.media ? "media-" : "data-") + t.id}
-                  className={isSelected ? "selected" : ""}
-                  onClick={() => (t.media ? openMedia(t.id) : open(t.id))}
-                >
-                  <Icon size={14} />
-                  <span>{t.name}</span>
-                  {isSelected && <i />}
-                </button>
+                <div key={(t.media ? "media-" : "data-") + t.id} className="recent-task-row">
+                  <button
+                    className={isSelected ? "selected" : ""}
+                    onClick={() => {
+                      setConfirmingDelete(null);
+                      t.media ? openMedia(t.id) : open(t.id);
+                    }}
+                  >
+                    <Icon size={14} />
+                    <span>{t.name}</span>
+                    {isSelected && <i />}
+                  </button>
+                  <button
+                    className={`row-delete${confirming ? " confirming" : ""}`}
+                    aria-label={confirming ? `确认删除${t.name}` : `删除${t.name}`}
+                    title={confirming ? "再点一次确认删除" : "删除任务"}
+                    onClick={() => {
+                      if (confirming) t.media ? deleteMediaTask(t.id) : deleteTask(t.id);
+                      else setConfirmingDelete(t.id);
+                    }}
+                  >
+                    {confirming ? <Check size={13} /> : <Trash2 size={13} />}
+                    {confirming && "确认"}
+                  </button>
+                </div>
               );
             })}
         </div>

@@ -506,30 +506,61 @@ input:disabled {
 .recent-tasks-nav {
   margin-top: 31px;
 }
-.recent-tasks-nav > button {
+.recent-task-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.recent-task-row > button:first-child {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 10px 12px;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   border: 0;
   background: none;
   color: #91a08f;
   font-size: 10px;
   text-align: left;
   border-radius: 6px;
-  min-width: 0;
 }
-.recent-tasks-nav > button > span {
+.recent-task-row > button > span {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-.recent-tasks-nav > button.selected {
+.recent-task-row > button.selected {
   color: #668b6c;
   background: #f6f9f2;
 }
-.recent-tasks-nav > button > i {
+.recent-task-row .row-delete {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  border: 0;
+  background: none;
+  color: #b3bfae;
+  padding: 7px 6px;
+  border-radius: 5px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.recent-task-row:hover .row-delete,
+.recent-task-row .row-delete:focus-visible,
+.recent-task-row .row-delete.confirming {
+  opacity: 1;
+}
+.recent-task-row .row-delete:hover,
+.recent-task-row .row-delete.confirming {
+  color: var(--red);
+  background: #f7ebe9;
+}
+.recent-task-row .row-delete.confirming {
+  font-size: 10px;
+}
+.recent-task-row > button > i {
   width: 4px;
   height: 4px;
   background: #83a787;
@@ -3718,7 +3749,7 @@ code {
   .sidebar-create {
     font-size: 11px;
   }
-  .recent-tasks-nav > button {
+  .recent-tasks-nav .recent-task-row > button {
     font-size: 9px;
     gap: 5px;
   }
@@ -3950,7 +3981,7 @@ code {
   .sidebar nav a {
     font-size: 13px;
   }
-  .recent-tasks-nav > button {
+  .recent-tasks-nav .recent-task-row > button {
     font-size: 10px;
   }
   .sidebar-create {
@@ -5408,6 +5439,95 @@ code {
 .copilot .chat-composer textarea {
   min-width: 0;
 }
+/* ---- AI 消息的 Markdown 渲染（react-markdown，默认不执行原始 HTML）----
+   助手消息正文在 .md 作用域内；覆盖全局 p 的 margin，补列表/表格/代码块样式。 */
+.copilot .message .md {
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.8;
+  color: #4f6958;
+}
+.copilot .message .md > :first-child {
+  margin-top: 0;
+}
+.copilot .message .md > :last-child {
+  margin-bottom: 0;
+}
+.copilot .message .md p {
+  margin: 0 0 8px;
+  color: #4f6958;
+}
+.copilot .message .md ul,
+.copilot .message .md ol {
+  margin: 4px 0 8px;
+  padding-left: 18px;
+}
+.copilot .message .md li {
+  margin: 2px 0;
+}
+.copilot .message .md li::marker {
+  color: #7fa089;
+}
+.copilot .message .md strong {
+  font-weight: 600;
+  color: #33523f;
+}
+.copilot .message .md h1,
+.copilot .message .md h2,
+.copilot .message .md h3,
+.copilot .message .md h4 {
+  font-size: 12px;
+  margin: 10px 0 4px;
+  font-weight: 600;
+}
+.copilot .message .md table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 11px;
+  margin: 6px 0 10px;
+  display: block;
+  overflow-x: auto;
+}
+.copilot .message .md th,
+.copilot .message .md td {
+  border: 1px solid #d5e2d9;
+  padding: 4px 8px;
+  text-align: left;
+  white-space: nowrap;
+}
+.copilot .message .md th {
+  background: #eef5ef;
+  font-weight: 600;
+}
+.copilot .message .md code {
+  background: #eef3ef;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 11px;
+}
+.copilot .message .md pre {
+  background: #f2f6f2;
+  border: 1px solid #d5e2d9;
+  border-radius: 6px;
+  padding: 8px 10px;
+  overflow-x: auto;
+  margin: 6px 0 10px;
+}
+.copilot .message .md pre code {
+  background: none;
+  padding: 0;
+}
+.copilot .message .md blockquote {
+  margin: 6px 0;
+  padding: 2px 10px;
+  border-left: 3px solid #bfd9c9;
+  color: #6b8672;
+}
+.copilot .message .md hr {
+  border: 0;
+  border-top: 1px solid #d5e2d9;
+  margin: 10px 0;
+}
 .is-workbench .workbench-heading-title > .workbench-nav-toggle {
   display: none;
 }
@@ -5889,6 +6009,59 @@ code {
 }
 
 /* ---- 媒体任务（图片 / 音频 / 视频清洗）---- */
+.url-fetch-row {
+  display: flex;
+  gap: 8px;
+}
+.url-fetch-row input {
+  flex: 1;
+  min-width: 0;
+}
+.url-fetch-row .button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.page-tables {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 10px;
+}
+.page-tables label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--secondary);
+}
+.page-tables label.picked {
+  border-color: #227f64;
+  background: var(--green-tint);
+  color: var(--green-dark);
+}
+.page-preview {
+  max-height: 240px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+.page-preview table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.page-preview td {
+  border-bottom: 1px solid var(--border);
+  padding: 6px 10px;
+  white-space: nowrap;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .media-workbench-body {
   padding: 20px 22px 26px;
 }

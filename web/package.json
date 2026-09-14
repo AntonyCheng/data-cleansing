@@ -16,7 +16,9 @@
     "papaparse": "^5.5.3",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
-    "read-excel-file": "^5.8.8"
+    "react-markdown": "^10.1.0",
+    "read-excel-file": "^5.8.8",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@types/papaparse": "^5.3.16",

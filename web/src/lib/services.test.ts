@@ -99,10 +99,15 @@ describe("清洗成果与数据服务", () => {
     expect(JSON.stringify(store)).toBe(before);
     expect(saved.tasks).toBe(store.tasks);
     expect(saved.warehouses).toBe(store.warehouses);
-    expect(serviceStatus(task, saved.services![0])).toBe("已生效");
+    // 种子里预置了商品主数据服务，这里只断言本任务自己的那条配置
+    const own = saved.services!.filter((s) => s.taskId === task.id);
+    expect(own).toHaveLength(1);
+    expect(serviceStatus(task, own[0])).toBe("已生效");
     const edited = saveDataService(saved, { ...draft, name: "新的服务名称" });
-    expect(edited.services).toHaveLength(1);
-    expect(edited.services![0].name).toBe("新的服务名称");
+    expect(edited.services!.filter((s) => s.taskId === task.id)).toHaveLength(1);
+    expect(edited.services!.find((s) => s.taskId === task.id)!.name).toBe(
+      "新的服务名称",
+    );
   });
 
   it("未清洗、空结果和校验异常不可配置服务", () => {
@@ -133,9 +138,11 @@ describe("清洗成果与数据服务", () => {
       expect(() => saveDataService(store, { ...draft, ...invalid })).toThrow();
     }
     const saved = saveDataService(store, draft);
-    const another = store.tasks.find(
-      (task) => task.runs.length && task.id !== draft.taskId,
-    )!;
+    // 种子里只有一个预清洗任务，给另一个任务就地补一个可用 run 来测接口标识唯一性
+    const another = store.tasks.find((t) => !t.runs.length)!;
+    another.runs = [
+      structuredClone(store.tasks.find((t) => t.runs.length)!.runs[0]),
+    ];
     expect(() =>
       saveDataService(saved, {
         ...draft,
@@ -152,7 +159,9 @@ describe("清洗成果与数据服务", () => {
     expect(serviceStatus(task, draft)).toBe("待更新");
     expect(() => saveDataService(saved, draft)).toThrow("已更新");
     const updated = saveDataService(saved, { ...draft, runId: "new-run" });
-    expect(serviceStatus(task, updated.services![0])).toBe("已生效");
+    expect(
+      serviceStatus(task, updated.services!.find((s) => s.taskId === task.id)!),
+    ).toBe("已生效");
   });
 
   it("响应示例按配置字段和版本分页，不混入原始、删除或异常数据", () => {

@@ -62,6 +62,8 @@ export default function ConnectorSource({
   const [listPath, setListPath] = useState("");
   const [preview, setPreview] = useState<ExtractResult | null>(null);
   const [busy, setBusy] = useState(false);
+  // 「使用演示数据源」预填标记：新建连接表单填好后，保存成功时再自动填提取参数（路径/翻页）
+  const [demoPrefill, setDemoPrefill] = useState(false);
 
   const kinds = KINDS_FOR[kind];
 
@@ -82,6 +84,17 @@ export default function ConnectorSource({
       listTables(selected.id)
         .then(setTables)
         .catch((e: unknown) => setError(e instanceof Error ? e.message : "拉取表列表失败"));
+    }
+    if (selected && demoPrefill) {
+      // 演示数据源：连接保存成功后自动填好提取参数，用户直接点「预览」即可
+      setApiPath("/api/trade");
+      setApiMethod("GET");
+      setPageParam("page");
+      setPageSizeParam("pageSize");
+      setPageSize(2);
+      setListPath("data");
+      setAdvanced(true);
+      setDemoPrefill(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
@@ -204,11 +217,32 @@ export default function ConnectorSource({
       )}
 
       {!creating ? (
-        <button className="sample-link" onClick={() => setCreating(true)}>
-          <Plus size={14} />
-          新建连接
-          <ArrowRight size={14} />
-        </button>
+        <>
+          <button className="sample-link" onClick={() => setCreating(true)}>
+            <Plus size={14} />
+            新建连接
+            <ArrowRight size={14} />
+          </button>
+          {kind === "API" && (
+            <button
+              className="sample-link"
+              onClick={() => {
+                // 一键预填内置演示 API（docker compose 部署时的容器网内地址），
+                // 保存连接后提取参数也会自动填好
+                setBaseUrl("http://demo-api:8090");
+                setAuthType("api-key");
+                setApiKeyHeader("X-Api-Key");
+                setSecret("hlj-demo-2026");
+                setConnName("黑龙江省演示数据API");
+                setDemoPrefill(true);
+                setCreating(true);
+              }}
+            >
+              使用演示数据源（黑龙江省API）
+              <ArrowRight size={14} />
+            </button>
+          )}
+        </>
       ) : (
         <div className="connector-form">
           {kind === "数据库" ? (

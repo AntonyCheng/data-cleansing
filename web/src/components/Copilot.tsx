@@ -1,5 +1,7 @@
 import { runStatus } from "../lib/status";
 import { useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   ArrowDown,
   ArrowRight,
@@ -19,7 +21,7 @@ import {
 } from "lucide-react";
 import type { DataTask, Rule, Run } from "../lib/types";
 import { analyze, parseInstruction } from "../lib/engine";
-import { buildRuleMatch, suggestRule, type RuleMatch } from "../lib/ai";
+import { buildColumnStats, buildDataPayload, buildRuleMatch, chatWithAI, type RuleMatch } from "../lib/ai";
 import { ruleCatalog } from "../data/rules";
 import { Badge, Notice } from "./UI";
 type Tab = "数据质量" | "一键清洗" | "清洗规则" | "AI 对话";
@@ -30,6 +32,23 @@ type Message = {
   match?: RuleMatch | null;
   done?: boolean;
 };
+
+/** 欢迎页的示例问题按当前任务字段动态生成——只出现和这份数据相关的说法，
+ *  避免在"黑龙江省地市指标"这种表里推荐"手机号去重"这类驴唇不对马嘴的示例。 */
+function buildSuggestions(task: DataTask, profile: ReturnType<typeof analyze>): string[] {
+  const out: string[] = [];
+  const text = task.fields.find((f) => f.type === "文本");
+  const num = task.fields.find((f) => f.type === "数值");
+  const phone = task.fields.find((f) => f.type === "手机号");
+  const region = task.fields.find((f) => /省|地区|province|region/i.test(f.key + f.label));
+  if (num) out.push(text ? `哪个${text.label}的${num.label}最高？` : `${num.label}最大是多少？`);
+  if (region) out.push(`将${region.label}里的别名统一成标准写法`);
+  if (phone) out.push("手机号为空的记录放到异常表");
+  if (profile.issues.some((i) => i.category === "重复数据")) out.push("重复的记录只保留一条");
+  if (!out.length || out.length < 4) out.push("这份数据有哪些质量问题？");
+  return out.slice(0, 4);
+}
+
 export default function Copilot({
   task,
   onPlan,
@@ -63,16 +82,13 @@ export default function Copilot({
   const run = task.runs[0];
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
-  const [thinkingLabel, setThinkingLabel] = useState("正在匹配规则…");
+  const [thinkingLabel, setThinkingLabel] = useState("AI 正在思考…");
   const [messages, setMessages] = useState<Message[]>([]);
   const [allIssues, setAllIssues] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (messages.length) bottom.current?.scrollIntoView({ block: "nearest" });
   }, [messages, busy]);
-  function reply(text: string, match?: RuleMatch | null) {
-    setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text, match }]);
-  }
   async function send(input: string) {
     if (!input.trim() || busy) return;
     setMessages((m) => [
@@ -81,48 +97,77 @@ export default function Copilot({
     ]);
     setText("");
     setBusy(true);
-    setThinkingLabel("正在匹配规则…");
-    // 本地正则先匹配，零成本零延迟，覆盖大部分常见说法
-    const local = await new Promise<ReturnType<typeof parseInstruction>>((resolve) =>
-      setTimeout(() => resolve(parseInstruction(input, task.fields)), 550),
-    );
-    if (local) {
-      reply(local.explanation, local);
-      setBusy(false);
-      return;
-    }
-    if (/质量|问题|分析/.test(input)) {
-      reply(
-        `已检查 ${task.raw.length} 行数据，发现 ${profile.issues.length} 项问题，涉及 ${profile.problemRows} 行。你可以在“数据质量”中定位问题，或生成清洗方案。`,
+    setThinkingLabel("AI 正在思考…");
+    // 带上最近几轮对话，支持"那第二名是哪个？"这类多轮追问
+    const history = messages.slice(-8).map((m) => ({ role: m.role, content: m.text }));
+    // 先插入空的助手消息占位，流式增量实时填进来
+    const streamId = crypto.randomUUID();
+    let streamed = "";
+    const patchStream = (patch: Partial<Message>) =>
+      setMessages((all) =>
+        all.map((x) => (x.id === streamId ? { ...x, ...patch } : x)),
       );
-      setBusy(false);
-      return;
-    }
-    // 本地规则没命中，问大模型兜底——模型只能从规则目录里选，选出来的还要再过一遍白名单校验
-    setThinkingLabel("本地规则未命中，正在请求 AI 理解你的需求…");
+    setMessages((m) => [...m, { id: streamId, role: "assistant", text: "" }]);
     try {
-      const response = await suggestRule(
-        input,
-        task.fields.map((f) => ({ key: f.key, label: f.label, type: f.type })),
-        ruleCatalog.map((r) => ({
-          id: r.id,
-          name: r.name,
-          description: r.description,
-          operation: r.operation,
-          target: r.target,
-          params: r.params,
-        })),
+      const resp = await chatWithAI(
+        {
+          text: input,
+          history,
+          fields: task.fields.map((f) => ({ key: f.key, label: f.label, type: f.type })),
+          catalog: ruleCatalog.map((r) => ({
+            id: r.id,
+            name: r.name,
+            description: r.description,
+            operation: r.operation,
+            target: r.target,
+            params: r.params,
+          })),
+          data: buildDataPayload(task.raw, task.fields),
+          profile: {
+            issues: profile.issues.map((i) => ({
+              title: i.title,
+              category: i.category,
+              count: i.rows.length,
+            })),
+            problemRows: profile.problemRows,
+            columnStats: buildColumnStats(task.raw, task.fields),
+          },
+        },
+        {
+          onDelta: (delta) => {
+            streamed += delta;
+            patchStream({ text: streamed });
+          },
+        },
       );
-      const match = buildRuleMatch(response, task.fields);
-      reply(
-        response.explanation ||
-          (match ? match.explanation : "这条需求暂未匹配到本地规则，AI 也没能理解出具体操作，换种说法试试？"),
-        match,
-      );
+      if (resp.intent === "clean") {
+        // 模型只能"选"目录里的规则，buildRuleMatch 再过一遍白名单（id/字段/参数键名/数值格式）
+        const match = buildRuleMatch(
+          { rules: resp.rules, explanation: resp.explanation },
+          task.fields,
+        );
+        patchStream({
+          text:
+            resp.explanation ||
+            match?.explanation ||
+            resp.reply ||
+            streamed ||
+            "我理解你想清理数据，但没能在规则目录里选出合适的规则，换个说法试试？",
+          match,
+        });
+      } else {
+        patchStream({ text: resp.reply || streamed || "（模型没有返回内容，再试一次？）" });
+      }
     } catch (e) {
-      reply(
-        `这条需求暂未匹配到本地规则。当前支持空值分流、去重、空格处理、手机号、地区、日期、金额及脱敏。${e instanceof Error ? `（AI 兜底也失败了：${e.message}）` : ""}`,
-      );
+      // 降级：大模型调不通时退回本地规则匹配，常见清洗说法仍然可用
+      const local = parseInstruction(input, task.fields);
+      if (local) {
+        patchStream({ text: `AI 服务暂时不可用，已改用本地规则匹配兜底。${local.explanation}`, match: local });
+      } else {
+        patchStream({
+          text: `AI 服务暂时不可用（${e instanceof Error ? e.message : "网络错误"}），稍后再试，或直接在“清洗规则”里手动添加规则。`,
+        });
+      }
     } finally {
       setBusy(false);
     }
@@ -416,16 +461,11 @@ export default function Copilot({
                 <Sparkles size={26} />
               </span>
               <h3>告诉我，你想怎么整理？</h3>
-              <p>描述规则，预览方案，再确认执行。</p>
+              <p>可以问数据里的问题，也可以描述你想怎么清洗。</p>
             </div>
             {!messages.length && (
               <div className="chat-suggestions">
-                {[
-                  "手机号为空的数据放到异常表",
-                  "姓名和手机号一样，保留更新时间最新的记录",
-                  "将 HLJ 和黑龙江统一成黑龙江省",
-                  "客户名称一样且手机号后8位一样，保留最新记录",
-                ].map((t) => (
+                {buildSuggestions(task, profile).map((t) => (
                   <button key={t} onClick={() => send(t)}>
                     {t}
                     <ArrowRight size={13} />
@@ -441,7 +481,15 @@ export default function Copilot({
                   </span>
                 )}
                 <div>
-                  <p>{m.text}</p>
+                  {m.role === "assistant" ? (
+                    <div className="md">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {m.text}
+                      </ReactMarkdown>
+                    </div>
+                  ) : (
+                    <p>{m.text}</p>
+                  )}
                   {m.match && (
                     <div className="matched-rule">
                       <Badge tone={m.match.custom ? "amber" : "green"}>

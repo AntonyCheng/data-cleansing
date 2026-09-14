@@ -21,7 +21,7 @@ services:
     restart: unless-stopped
 
   # 演示用"外部数据源"：与应用自己的 db 完全独立，只用来在"数据库连接器"演示时
-  # 现场连接、拉取黑龙江省真实经济与人口数据（见 demo-data/heilongjiang-init.sql 顶部的数据来源说明）。
+  # 现场连接、拉取黑龙江省真实数据（4 张表，见 demo-data/heilongjiang-init.sql 顶部的数据来源说明）。
   demo-db:
     image: postgres:16-alpine
     environment:
@@ -42,6 +42,30 @@ services:
       retries: 5
       start_period: 10s
     mem_limit: 256m
+    restart: unless-stopped
+
+  # 演示用"外部 API + 演示网页"：轻量零依赖 Node 服务，内嵌黑龙江省真实年度序列数据
+  # （对俄贸易 / 大庆油田，见 demo-api/data.json 的来源说明），演示"API 连接器"的
+  # API Key 鉴权（X-Api-Key）和页码翻页；同时托管 /page/bulletin.html 静态公报页，
+  # 供"URL / 网页"来源演示真实抓取与表格解析。端口两种场景同理：
+  # - 容器网内（bff 抓网页/调 API）：http://demo-api:8090
+  # - 本机裸跑 bff 调试：http://localhost:8090
+  demo-api:
+    build:
+      context: ./demo-api
+      dockerfile: Dockerfile
+    image: data-cleansing-demo-api
+    environment:
+      DEMO_API_KEY: ${DEMO_API_KEY:-hlj-demo-2026}
+    ports:
+      - "8090:8090"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8090/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    mem_limit: 128m
     restart: unless-stopped
 
   bff:

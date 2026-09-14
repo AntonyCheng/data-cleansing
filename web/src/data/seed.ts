@@ -1,8 +1,14 @@
-import type { DataRow, DataTask, Store } from "../lib/types";
+import type { DataServiceConfig, DataRow, DataTask, Store } from "../lib/types";
 import { execute, inferFields, recommend } from "../lib/engine";
 import { makeRule, ruleCatalog } from "./rules";
 import { heilongjiangCityRows } from "./heilongjiang";
-import { createMediaSeed } from "./mediaSeed";
+import {
+  hljGdp2025Rows,
+  hljGrainRows,
+  hljTourismRows,
+  hljTradeSeries,
+} from "./hlj2025";
+import { hljScenicAllRows } from "./hljScenicExtra";
 const names = [
   "陈雨桐",
   "王子轩",
@@ -76,78 +82,12 @@ export function makeTask(
     demo,
   };
 }
+// 演示账号的初始工作区：全部为黑龙江省真实数据任务（见各数据文件顶部注释的来源说明）。
+// 「黑龙江省地市经济与人口指标」预执行清洗并入库、预配置好对外服务——部署开箱即有
+// “清洗完成 + 已入库 + 服务已生效”的完整状态可讲；其余 3 个保持待清洗，供现场演示完整流程。
+// sampleRows()（客户数据样例）只作为创建任务向导里的“使用样例”按钮数据，不再进种子。
 export function createSeed(): Store {
-  const task = makeTask(
-    "客户数据标准化",
-    "客户数据_2026年9月.xlsx",
-    "Excel",
-    sampleRows(),
-    true,
-  );
-  task.id = "customers";
-  const orders = makeTask(
-    "电商订单数据整理",
-    "订单中心 · 每日订单",
-    "MySQL",
-    Array.from({ length: 24 }, (_, i) => ({
-      id: `order-${i}`,
-      values: {
-        order_id: `ORD${2026001 + i}`,
-        商品: ["桌面收纳盒", "便携咖啡杯", "无线键盘"][i % 3],
-        订单金额: i % 3 === 0 ? "1,200元" : "380",
-        下单日期: "2026/9/10",
-        状态: "已支付",
-      },
-    })),
-    true,
-  );
-  orders.id = "orders";
-  orders.runs = [execute(orders.raw, orders.fields, orders.plan)];
-  const products = makeTask(
-    "商品主数据同步",
-    "商品开放接口",
-    "API",
-    Array.from({ length: 16 }, (_, i) => ({
-      id: `product-${i}`,
-      values: {
-        sku: `SKU${10001 + i}`,
-        商品名称: ["桌面收纳盒", "便携咖啡杯", "无线键盘"][i % 3],
-        库存: String(i * 12 + 32),
-        单价: String(i * 20 + 120),
-      },
-    })),
-    true,
-  );
-  products.id = "products";
-  products.runs = [execute(products.raw, products.fields, products.plan)];
-  const dest = {
-    connection: "本地演示数仓",
-    database: "standard",
-    table: "dim_products",
-    mode: "新建表" as const,
-    primaryKey: "sku",
-    mappings: Object.fromEntries(
-      products.fields.map((f, i) => [
-        f.key,
-        /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(f.key) ? f.key : "field_" + (i + 1),
-      ]),
-    ),
-    types: Object.fromEntries(
-      products.fields.map((f) => [
-        f.key,
-        f.type === "数值" ? "DECIMAL(18,4)" : "VARCHAR(255)",
-      ]),
-    ),
-  };
-  products.storedRunId = products.runs[0].id;
-  products.destination = dest;
-  products.storedAt = new Date().toISOString();
-  const customerDedup = makeRule(
-    ruleCatalog.find((r) => r.id === "customer-dedup")!,
-    task.fields,
-  );
-  // 黑龙江省地市经济与人口指标：真实数据（黑龙江统计年鉴2025 + 第七次全国人口普查公报），
-  // 见 data/heilongjiang.ts 顶部注释的完整来源说明；保持"待清洗"状态，供现场演示地区别名规则和去重。
+  const now = new Date().toISOString();
   const heilongjiang = makeTask(
     "黑龙江省地市经济与人口指标",
     "黑龙江省统计局 · 黑龙江统计年鉴2025 / 第七次全国人口普查公报",
@@ -156,40 +96,142 @@ export function createSeed(): Store {
     true,
   );
   heilongjiang.id = "heilongjiang";
+  heilongjiang.runs = [
+    execute(heilongjiang.raw, heilongjiang.fields, heilongjiang.plan),
+  ];
+  const dest = {
+    connection: "本地演示数仓",
+    database: "standard",
+    table: "dim_hlj_cities",
+    mode: "新建表" as const,
+    primaryKey: heilongjiang.fields[0].key,
+    mappings: Object.fromEntries(
+      heilongjiang.fields.map((f, i) => [
+        f.key,
+        /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(f.key) ? f.key : "field_" + (i + 1),
+      ]),
+    ),
+    types: Object.fromEntries(
+      heilongjiang.fields.map((f) => [
+        f.key,
+        f.type === "数值" ? "DECIMAL(18,4)" : "VARCHAR(255)",
+      ]),
+    ),
+  };
+  heilongjiang.storedRunId = heilongjiang.runs[0].id;
+  heilongjiang.destination = dest;
+  heilongjiang.storedAt = now;
+
+  // —— 以下三个任务保持“待清洗”，是现场演示清洗全流程的素材 ——
+  const gdp2025 = makeTask(
+    "黑龙江省2025年各地市生产总值",
+    "各地市2025年统计公报 · 黑龙江省统计局2025年公报",
+    "Excel",
+    hljGdp2025Rows(),
+    true,
+  );
+  gdp2025.id = "hlj-gdp-2025";
+  const grain = makeTask(
+    "黑龙江省各地市粮食产量",
+    "各地市2024年统计公报 · 新华社（二十二连丰）",
+    "Excel",
+    hljGrainRows(),
+    true,
+  );
+  grain.id = "hlj-grain";
+  const tourism = makeTask(
+    "哈尔滨冰雪季旅游数据",
+    "哈尔滨市文化广电和旅游局",
+    "数据库",
+    hljTourismRows(),
+    true,
+  );
+  tourism.id = "hlj-tourism";
+  // A 级景区名录：438 条官方原件 + 14 条注入的演示脏数据（见 hljScenicExtra.ts），
+  // 既是"大数据表"（分页/AI 问答/对外服务），一键清洗也能看出真实效果。
+  const scenic = makeTask(
+    "黑龙江省A级旅游景区名录",
+    "黑龙江省文化和旅游厅 · 2023年全省A级旅游景区名录",
+    "Excel",
+    hljScenicAllRows(),
+    true,
+  );
+  scenic.id = "hlj-scenic";
+  // 对俄贸易序列：API 来源的示例任务（数据来自 demo-api 的 /api/trade，哈尔滨海关历年发布），
+  // 与"创建数据任务 → API"入口的演示数据源同源——现场实时抓取的结果和这个任务一致，可互为印证。
+  // 2023 年出口/进口、非 2024 年份的对俄值公报未披露，留空正好演示空值处理。
+  const trade = makeTask(
+    "黑龙江省对俄贸易年度序列",
+    "黑龙江省演示数据API · 哈尔滨海关历年发布",
+    "API",
+    hljTradeSeries.map((row, i) => ({
+      id: `hlj-trade-${i + 1}`,
+      values: { ...row },
+    })),
+    true,
+  );
+  trade.id = "hlj-trade";
+
+  // 预置已生效的数据服务：部署后 GET /api/data-services/hlj-city-indicators
+  // 无需任何配置即可现场调用，返回的是清洗后的真实黑龙江数据。
+  const services: DataServiceConfig[] = [
+    {
+      taskId: "heilongjiang",
+      runId: heilongjiang.runs[0].id,
+      name: "黑龙江省地市指标服务",
+      slug: "hlj-city-indicators",
+      description: "清洗后的黑龙江省 13 地市经济与人口指标（演示）",
+      fields: [
+        "地市",
+        "所属省份",
+        "地区生产总值_亿元",
+        "人均GDP_元",
+        "常住人口_2020年七普",
+        "城镇化率_百分比",
+      ],
+      pageSize: 20,
+      updatedAt: now,
+    },
+  ];
+  const regionRule = makeRule(
+    ruleCatalog.find((r) => r.id === "region")!,
+    heilongjiang.fields,
+  );
   return {
-    tasks: [task, orders, products, heilongjiang],
-    mediaTasks: createMediaSeed(),
-    services: [],
+    tasks: [heilongjiang, gdp2025, grain, tourism, scenic, trade],
+    // 媒体任务不再预置占位样例——上传图片/音频/视频创建的媒体任务会进入这个列表
+    mediaTasks: [],
+    services,
     savedRules: [
       {
-        id: "enterprise-1",
-        name: "企业客户唯一性检查",
-        description: "按客户姓名与手机号联合去重，保留更新时间最新的记录。",
+        id: "enterprise-region",
+        name: "地区名称标准化",
+        description: "将黑龙江 / 黑龍江 / HLJ 等地区别名统一为标准写法“黑龙江省”。",
         scope: "企业规则",
-        rules: [customerDedup],
-        fieldTypes: ["文本", "手机号", "日期"],
+        rules: [regionRule],
+        fieldTypes: ["文本"],
         createdBy: "数据管理组",
         method: "手工创建",
-        createdAt: new Date().toISOString(),
+        createdAt: now,
         uses: 6,
         version: 1,
       },
     ],
     templates: [
       {
-        id: "template-customer",
-        name: "客户数据标准清洗模板",
-        description: "去空格、标准化、去重与异常分流，适合客户主数据。",
-        rules: task.plan,
-        createdAt: new Date().toISOString(),
+        id: "template-hlj-cities",
+        name: "地区指标清洗模板",
+        description: "地区别名标准化、数值格式统一与去重，适合地区统计指标类数据。",
+        rules: heilongjiang.plan,
+        createdAt: now,
         uses: 12,
       },
     ],
     warehouses: [
       {
-        id: "standard.dim_products",
+        id: "standard.dim_hlj_cities",
         destination: dest,
-        rows: products.runs[0].rows.map((row) => ({
+        rows: heilongjiang.runs[0].rows.map((row) => ({
           id: row.id,
           values: Object.fromEntries(
             Object.entries(dest.mappings).map(([key, target]) => [
@@ -198,9 +240,9 @@ export function createSeed(): Store {
             ]),
           ),
         })),
-        taskId: products.id,
-        runId: products.runs[0].id,
-        updatedAt: products.storedAt,
+        taskId: heilongjiang.id,
+        runId: heilongjiang.runs[0].id,
+        updatedAt: heilongjiang.storedAt,
       },
     ],
   };
